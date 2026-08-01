@@ -355,8 +355,8 @@ class PlayerActivity : AppCompatActivity() {
                     showChannelInfo()
                     return true
                 }
-                // 收藏键
-                KeyEvent.KEYCODE_FAVORITES, KeyEvent.KEYCODE_BOOKMARK -> {
+                // 收藏键 (BOOKMARK=174, STAR=17 用于部分遥控器)
+                KeyEvent.KEYCODE_BOOKMARK, KeyEvent.KEYCODE_STAR -> {
                     toggleFavorite()
                     return true
                 }

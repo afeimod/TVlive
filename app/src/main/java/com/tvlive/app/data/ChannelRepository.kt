@@ -140,7 +140,7 @@ class ChannelRepository(private val context: Context) {
         }
     }
 
-    private fun fetchUrl(url: String): String = withContext(Dispatchers.IO) {
+    private suspend fun fetchUrl(url: String): String = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).build()
         httpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
