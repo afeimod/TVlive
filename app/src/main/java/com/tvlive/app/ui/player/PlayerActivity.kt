@@ -1,6 +1,7 @@
 package com.tvlive.app.ui.player
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -9,6 +10,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -69,7 +72,7 @@ class PlayerActivity : AppCompatActivity() {
         R.string.menu_aspect_16_9,
         R.string.menu_aspect_4_3
     )
-    private var aspectIndex = 0
+    private var aspectIndex = 1  // 默认 FILL, 与 XML resize_mode="fill" 一致
 
     // 播放器回调
     private val onError: (String) -> Unit = { msg ->
@@ -97,13 +100,8 @@ class PlayerActivity : AppCompatActivity() {
         binding = ActivityPlayerBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 沉浸式全屏
-        window.decorView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-        )
+        // 沉浸式全屏 (隐藏状态栏 + 导航栏)
+        hideSystemUI()
 
         playerManager = TvPlayerManager(this).apply {
             this.onError = this@PlayerActivity.onError
@@ -116,21 +114,83 @@ class PlayerActivity : AppCompatActivity() {
         setupSettingsPanel()
         setupGestureDetector()
 
-        val ids = intent.getLongArrayExtra(EXTRA_CHANNEL_IDS) ?: LongArray(0)
-        val position = intent.getIntExtra(EXTRA_POSITION, 0)
+        val ids = intent.getLongArrayExtra(EXTRA_CHANNEL_IDS)
 
         lifecycleScope.launch {
-            channels = loadChannels(ids)
-            if (channels.isEmpty()) {
-                finish()
-                return@launch
+            if (ids == null || ids.isEmpty()) {
+                // 直接启动 (从桌面图标), 自动加载并播放 CCTV-1
+                loadAndAutoPlay()
+            } else {
+                // 从频道浏览界面进入
+                channels = loadChannels(ids)
+                if (channels.isEmpty()) {
+                    loadAndAutoPlay()
+                } else {
+                    currentIndex = intent.getIntExtra(EXTRA_POSITION, 0).coerceIn(0, channels.size - 1)
+                    overlayAdapter.submit(channels)
+                    playCurrent()
+                }
             }
-            currentIndex = position.coerceIn(0, channels.size - 1)
-            overlayAdapter.submit(channels)
-            playCurrent()
         }
 
         showHint()
+    }
+
+    /**
+     * 直接启动时: 加载频道并自动播放 CCTV-1
+     * 首次启动若无频道数据, 先刷新直播源
+     */
+    private suspend fun loadAndAutoPlay() {
+        var channelList = TvLiveApp.instance.repository.allChannels.first()
+
+        if (channelList.isEmpty()) {
+            // 无频道数据, 需要刷新直播源
+            runOnUiThread {
+                binding.loadingView.visibility = View.VISIBLE
+                binding.tvLoadingText.text = getString(R.string.loading_sources)
+            }
+
+            TvLiveApp.instance.repository.refreshAllSources { current, total, name ->
+                runOnUiThread {
+                    binding.tvLoadingText.text = getString(
+                        R.string.status_loading, current, total, name
+                    )
+                }
+            }
+
+            channelList = TvLiveApp.instance.repository.allChannels.first()
+
+            // 标记源已加载
+            getSharedPreferences("tvlive_prefs", MODE_PRIVATE)
+                .edit().putBoolean("sources_loaded", true).apply()
+        }
+
+        if (channelList.isEmpty()) {
+            runOnUiThread {
+                binding.loadingView.visibility = View.GONE
+                binding.errorView.visibility = View.VISIBLE
+                binding.tvErrorText.text = "无法加载频道，请检查网络后重试"
+            }
+            return
+        }
+
+        channels = channelList
+
+        // 优先查找 CCTV-1 综合
+        val cctv1 = channels.find {
+            it.name.contains("CCTV-1", true) ||
+            it.name.contains("CCTV1", true) ||
+            it.name.contains("央视一套", true) ||
+            it.name.contains("中央一套", true)
+        } ?: channels.find { it.group == Channel.GROUP_CCTV } ?: channels.first()
+
+        currentIndex = channels.indexOf(cctv1).coerceAtLeast(0)
+
+        runOnUiThread {
+            binding.loadingView.visibility = View.GONE
+            overlayAdapter.submit(channels)
+            playCurrent()
+        }
     }
 
     private suspend fun loadChannels(ids: LongArray): List<Channel> {
@@ -182,6 +242,9 @@ class PlayerActivity : AppCompatActivity() {
         binding.btnSourceManager.setOnClickListener {
             startActivity(Intent(this, SourceManagerActivity::class.java))
         }
+        binding.btnChannelBrowser.setOnClickListener {
+            startActivity(Intent(this, com.tvlive.app.ui.main.MainActivity::class.java))
+        }
         binding.btnSettings.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
@@ -191,7 +254,7 @@ class PlayerActivity : AppCompatActivity() {
         listOf(
             binding.btnPrevChannel, binding.btnNextChannel, binding.btnChannelList,
             binding.btnFavorite, binding.btnAspectRatio, binding.btnRefreshSource,
-            binding.btnSourceManager, binding.btnSettings, binding.btnExit
+            binding.btnSourceManager, binding.btnChannelBrowser, binding.btnSettings, binding.btnExit
         ).forEach { view ->
             view.setOnFocusChangeListener { v, hasFocus ->
                 v.alpha = if (hasFocus) 1.0f else 0.7f
@@ -208,6 +271,8 @@ class PlayerActivity : AppCompatActivity() {
         binding.ivMenuFavorite.setImageResource(
             if (channel?.favorite == true) R.drawable.ic_star_on else R.drawable.ic_star_off
         )
+        // 同步画面比例显示
+        binding.tvAspectRatio.text = getString(aspectNames[aspectIndex])
         // 聚焦第一个按钮
         binding.btnPrevChannel.requestFocus()
     }
@@ -261,10 +326,18 @@ class PlayerActivity : AppCompatActivity() {
         binding.loadingView.visibility = View.VISIBLE
         binding.tvLoadingText.text = getString(R.string.action_refresh)
         lifecycleScope.launch {
-            val result = TvLiveApp.instance.repository.refreshAllSources()
+            TvLiveApp.instance.repository.refreshAllSources()
             channels = TvLiveApp.instance.repository.allChannels.first()
             if (channels.isNotEmpty()) {
-                currentIndex = 0
+                // 刷新后默认回到 CCTV-1
+                val cctv1 = channels.find {
+                    it.name.contains("CCTV-1", true) ||
+                    it.name.contains("CCTV1", true) ||
+                    it.name.contains("央视一套", true) ||
+                    it.name.contains("中央一套", true)
+                } ?: channels.find { it.group == Channel.GROUP_CCTV } ?: channels.first()
+
+                currentIndex = channels.indexOf(cctv1).coerceAtLeast(0)
                 overlayAdapter.submit(channels)
                 playCurrent()
             }
@@ -514,6 +587,11 @@ class PlayerActivity : AppCompatActivity() {
         playerManager.resume()
     }
 
+    override fun onResume() {
+        super.onResume()
+        hideSystemUI()
+    }
+
     override fun onStop() {
         super.onStop()
         playerManager.pause()
@@ -531,10 +609,30 @@ class PlayerActivity : AppCompatActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
+            hideSystemUI()
+        }
+    }
+
+    /**
+     * 沉浸式全屏: 隐藏状态栏和导航栏
+     * 兼容旧版 (systemUiVisibility) 和新版 (WindowInsetsController) API
+     */
+    private fun hideSystemUI() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ 使用新 API
+            window.setDecorFitsSystemWindows(false)
+            val controller = WindowInsetsControllerCompat(window, window.decorView)
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            // Android 10 及以下使用旧 API
+            @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = (
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             )
         }

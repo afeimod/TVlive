@@ -12,7 +12,7 @@
         android:layout_height="match_parent"
         android:keepScreenOn="true"
         app:use_controller="false"
-        app:resize_mode="fit" />
+        app:resize_mode="fill" />
 
     <!-- 频道信息覆盖层 (顶部, 4秒自动隐藏) -->
     <LinearLayout
@@ -270,7 +270,7 @@
                             android:id="@+id/tvAspectRatio"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="@string/menu_aspect_fit"
+                            android:text="@string/menu_aspect_fill"
                             android:textColor="@color/text_secondary"
                             android:textSize="12sp" />
                     </LinearLayout>
@@ -341,6 +341,29 @@
                         android:layout_height="wrap_content"
                         android:layout_marginStart="12dp"
                         android:text="@string/menu_settings"
+                        android:textColor="@color/text_primary"
+                        android:textSize="15sp" />
+                </LinearLayout>
+
+                <!-- 频道浏览 -->
+                <LinearLayout
+                    android:id="@+id/btnChannelBrowser"
+                    style="@style/SettingItem"
+                    android:layout_marginBottom="4dp"
+                    android:gravity="center_vertical"
+                    android:focusable="true">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_list"
+                        android:tint="@color/accent"
+                        android:contentDescription="@null" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="12dp"
+                        android:text="@string/menu_channel_browser"
                         android:textColor="@color/text_primary"
                         android:textSize="15sp" />
                 </LinearLayout>

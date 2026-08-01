@@ -23,20 +23,20 @@
 
         <activity
             android:name=".ui.main.MainActivity"
+            android:configChanges="screenSize|orientation|keyboardHidden|smallestScreenSize|screenLayout" />
+
+        <activity
+            android:name=".ui.player.PlayerActivity"
             android:exported="true"
-            android:configChanges="screenSize|orientation|keyboardHidden|smallestScreenSize|screenLayout">
+            android:screenOrientation="landscape"
+            android:configChanges="screenSize|orientation|keyboardHidden|smallestScreenSize|screenLayout|navigation"
+            android:theme="@style/Theme.TvLive.Player">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".ui.player.PlayerActivity"
-            android:screenOrientation="landscape"
-            android:configChanges="screenSize|orientation|keyboardHidden|smallestScreenSize|screenLayout|navigation"
-            android:theme="@style/Theme.TvLive.Player" />
 
         <activity
             android:name=".ui.settings.SettingsActivity"

@@ -14,6 +14,21 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
+
+        // 明确支持所有架构 (含32位)
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+        }
+    }
+
+    // ABI 拆分: 按架构生成独立 APK, 减小体积
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            isUniversalApk = true  // 同时生成包含所有架构的通用包
+        }
     }
 
     buildTypes {
