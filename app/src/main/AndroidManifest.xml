@@ -34,6 +34,7 @@
 
         <activity
             android:name=".ui.player.PlayerActivity"
+            android:screenOrientation="landscape"
             android:configChanges="screenSize|orientation|keyboardHidden|smallestScreenSize|screenLayout|navigation"
             android:theme="@style/Theme.TvLive.Player" />
 

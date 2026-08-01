@@ -60,4 +60,24 @@
     <string name="hint_search">输入频道名称搜索...</string>
     <string name="hint_ok_show_list">按确认键显示频道列表</string>
     <string name="hint_channel_switch">上/下键切换频道</string>
+
+    <!-- 播放设置菜单 -->
+    <string name="menu_title">播放设置</string>
+    <string name="menu_prev_channel">上一个频道</string>
+    <string name="menu_next_channel">下一个频道</string>
+    <string name="menu_channel_list">频道列表</string>
+    <string name="menu_favorite">收藏/取消</string>
+    <string name="menu_refresh_source">刷新直播源</string>
+    <string name="menu_source_manager">直播源管理</string>
+    <string name="menu_settings">设置</string>
+    <string name="menu_back">退出播放</string>
+    <string name="menu_aspect_ratio">画面比例</string>
+    <string name="menu_aspect_fit">适应屏幕</string>
+    <string name="menu_aspect_fill">填满屏幕</string>
+    <string name="menu_aspect_16_9">16:9</string>
+    <string name="menu_aspect_4_3">4:3</string>
+    <string name="menu_scale">缩放</string>
+    <string name="menu_current_source">当前源</string>
+    <string name="menu_hint_phone">点击屏幕显示菜单 | 返回键打开设置</string>
+    <string name="menu_hint_tv">确认键=菜单 | 上下键=切台 | 左右键=频道列表</string>
 </resources>

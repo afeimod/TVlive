@@ -56,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private var favList: List<Channel> = emptyList()
     private var historyList: List<PlayHistory> = emptyList()
     private var isLoading = false
+    private var hasAutoPlayed = false  // 首次自动播放标记
 
     private val tabs = listOf(
         Tab(R.string.tab_all, null),
@@ -78,6 +79,12 @@ class MainActivity : AppCompatActivity() {
         setupTabs()
         setupListeners()
         observeData()
+
+        // 首次启动自动刷新源
+        val prefs = getSharedPreferences("tvlive_prefs", MODE_PRIVATE)
+        if (!prefs.getBoolean("sources_loaded", false)) {
+            viewModel.refreshSources()
+        }
     }
 
     private fun setupRecyclerView() {
@@ -193,9 +200,16 @@ class MainActivity : AppCompatActivity() {
                 binding.tvStatus.text = getString(
                     R.string.status_done, state.result.successCount, state.result.totalChannels
                 )
-                // 频道列表由 allChannels 流的重新发射刷新; 此处仅同步空状态
                 binding.emptyView.visibility =
                     if (adapter.itemCount == 0) View.VISIBLE else View.GONE
+
+                // 标记已加载，首次刷新后自动进入 CCTV-1 播放
+                getSharedPreferences("tvlive_prefs", MODE_PRIVATE)
+                    .edit().putBoolean("sources_loaded", true).apply()
+                if (!hasAutoPlayed && state.result.totalChannels > 0) {
+                    hasAutoPlayed = true
+                    autoPlayCctv1()
+                }
             }
         }
     }
@@ -249,6 +263,26 @@ class MainActivity : AppCompatActivity() {
             putExtra(PlayerActivity.EXTRA_POSITION, pos)
         }
         startActivity(intent)
+    }
+
+    /**
+     * 首次启动后自动进入 CCTV-1 播放
+     * 在央视频道中查找 CCTV-1 综合
+     */
+    private fun autoPlayCctv1() {
+        if (allChannelList.isEmpty()) return
+        // 优先查找 CCTV-1 综合
+        val cctv1 = allChannelList.find {
+            it.name.contains("CCTV-1", true) ||
+            it.name.contains("CCTV1", true) ||
+            it.name.contains("央视一套", true) ||
+            it.name.contains("中央一套", true)
+        } ?: allChannelList.find {
+            it.group == Channel.GROUP_CCTV
+        } ?: allChannelList.first()
+
+        val position = allChannelList.indexOf(cctv1)
+        launchPlayer(allChannelList, position)
     }
 
     private fun showSearchDialog() {
