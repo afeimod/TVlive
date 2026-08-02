@@ -11,6 +11,8 @@ import com.tvlive.app.net.HttpClientProvider
 import com.tvlive.app.net.UrlHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -124,22 +126,26 @@ class ChannelRepository(private val context: Context) {
         onProgress?.invoke(0, sources.size, "正在加载...")
 
         // 并行加载所有源
-        val results = kotlinx.coroutines.coroutineScope {
-            sources.map { source ->
-                kotlinx.coroutines.async(Dispatchers.IO) {
+        val results = coroutineScope {
+            val deferreds = sources.map { source ->
+                async(Dispatchers.IO) {
                     try {
                         val content = fetchUrl(source.url)
                         val channels = M3UParser.parse(content, source)
-                        Triple(source, channels, null as Exception?)
+                        SourceResult(source, channels, null)
                     } catch (e: Exception) {
-                        Triple(source, emptyList<Channel>(), e)
+                        SourceResult(source, emptyList(), e)
                     }
                 }
-            }.awaitAll()
+            }
+            deferreds.awaitAll()
         }
 
         // 按顺序处理结果（先成功的先插入）
-        results.forEachIndexed { index, (source, channels, error) ->
+        results.forEachIndexed { index, result ->
+            val source = result.source
+            val channels = result.channels
+            val error = result.error
             onProgress?.invoke(index + 1, sources.size, source.name)
             if (error != null) {
                 failCount++
@@ -312,4 +318,11 @@ data class RefreshResult(
     val failCount: Int,
     val totalChannels: Int,
     val errors: List<String>
+)
+
+/** 单个源的加载结果 */
+private data class SourceResult(
+    val source: Source,
+    val channels: List<Channel>,
+    val error: Exception?
 )
