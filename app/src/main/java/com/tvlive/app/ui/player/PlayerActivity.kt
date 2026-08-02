@@ -166,11 +166,16 @@ class PlayerActivity : AppCompatActivity() {
                 .edit().putBoolean("sources_loaded", true).apply()
 
             if (channelList.isEmpty()) {
-                // 显示详细错误信息
-                val errorMsg = if (result.errors.isNotEmpty()) {
-                    "加载失败: ${result.errors.joinToString("; ").take(200)}\n\n请检查网络后在设置中更换直播源"
-                } else {
-                    "无法加载频道，请检查网络后重试\n\n提示: 按确认键重试，按菜单键进入设置更换源"
+                // 显示详细错误信息, 包含具体失败原因
+                val errorMsg = buildString {
+                    if (result.errors.isNotEmpty()) {
+                        append("加载失败详情:\n")
+                        result.errors.take(3).forEach { append("  - $it\n") }
+                        append("\n请尝试: 1.检查网络 2.在设置中更换直播源")
+                    } else {
+                        append("无法加载频道，请检查网络后重试\n\n")
+                        append("提示: 按确认键重试，按菜单键进入设置更换源")
+                    }
                 }
                 runOnUiThread {
                     binding.loadingView.visibility = View.GONE

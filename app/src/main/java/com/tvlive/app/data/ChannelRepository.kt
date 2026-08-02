@@ -7,14 +7,13 @@ import com.tvlive.app.data.model.Channel
 import com.tvlive.app.data.model.ChannelGroup
 import com.tvlive.app.data.model.PlayHistory
 import com.tvlive.app.data.model.Source
+import com.tvlive.app.network.NetworkConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.util.concurrent.TimeUnit
 
 /**
  * 频道数据仓库 - 负责数据获取、解析、缓存
@@ -26,14 +25,8 @@ class ChannelRepository(private val context: Context) {
     private val sourceDao = db.sourceDao()
     private val historyDao = db.historyDao()
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .callTimeout(90, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .build()
+    // 使用优化的OkHttpClient: 自定义DNS + TLS兼容 + 连接池 + 缓存
+    private val httpClient = NetworkConfig.createClient(context).build()
 
     val allChannels: Flow<List<Channel>> = channelDao.getAllChannels()
     val favorites: Flow<List<Channel>> = channelDao.getFavorites()
@@ -153,9 +146,9 @@ class ChannelRepository(private val context: Context) {
     private suspend fun fetchUrl(url: String): String = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+            .header("User-Agent", NetworkConfig.USER_AGENT)
             .header("Accept", "*/*")
-            .header("Accept-Encoding", "gzip, deflate")
+            .header("Connection", "keep-alive")
             .build()
         httpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
