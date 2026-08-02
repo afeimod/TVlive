@@ -36,13 +36,51 @@ class ChannelRepository(private val context: Context) {
 
     // ==================== 源管理 ====================
 
-    /** 初始化默认源 */
+    /**
+     * 初始化默认源
+     *
+     * 支持版本迁移：当 DefaultSources.VERSION 变化时，会清除旧默认源并重新插入
+     */
     suspend fun initDefaultSources() {
+        val prefs = context.getSharedPreferences("tvlive_prefs", Context.MODE_PRIVATE)
+        val savedVersion = prefs.getInt("sources_version", 0)
+
         if (sourceDao.count() == 0) {
+            // 首次安装：插入所有默认源
             DefaultSources.sources.forEach { source ->
                 val id = sourceDao.insert(source)
                 Log.d("ChannelRepository", "Inserted source: ${source.name} id=$id")
             }
+            prefs.edit().putInt("sources_version", DefaultSources.VERSION).apply()
+        } else if (savedVersion < DefaultSources.VERSION) {
+            // 版本升级：更新默认源的 URL（保留用户自定义源）
+            Log.i("ChannelRepository", "Upgrading sources from v$savedVersion to v${DefaultSources.VERSION}")
+            val existingSources = sourceDao.getAllSourcesList()
+
+            for (defaultSource in DefaultSources.sources) {
+                val existing = existingSources.find { it.name == defaultSource.name }
+                if (existing != null) {
+                    // 更新已有源的 URL
+                    if (existing.url != defaultSource.url) {
+                        sourceDao.update(existing.copy(
+                            url = defaultSource.url,
+                            isDefault = defaultSource.isDefault,
+                            enabled = defaultSource.enabled
+                        ))
+                        Log.i("ChannelRepository", "Updated source URL: ${defaultSource.name} -> ${defaultSource.url}")
+                    }
+                } else {
+                    // 新增源
+                    val id = sourceDao.insert(defaultSource)
+                    Log.d("ChannelRepository", "Inserted new source: ${defaultSource.name} id=$id")
+                }
+            }
+
+            // 重置 sources_loaded 标志，让应用重新刷新源
+            prefs.edit()
+                .putInt("sources_version", DefaultSources.VERSION)
+                .putBoolean("sources_loaded", false)
+                .apply()
         }
     }
 
@@ -69,6 +107,8 @@ class ChannelRepository(private val context: Context) {
 
     /**
      * 从网络加载所有启用的源并解析频道
+     *
+     * 如果所有网络源都失败（如中国移动网络封锁），会自动加载内置备用频道
      */
     suspend fun refreshAllSources(onProgress: ((current: Int, total: Int, sourceName: String) -> Unit)? = null): RefreshResult {
         val sources = getEnabledSources()
@@ -111,7 +151,36 @@ class ChannelRepository(private val context: Context) {
             }
         }
 
+        // 所有网络源都失败时，加载内置备用频道（兜底）
+        if (successCount == 0) {
+            Log.w("ChannelRepository", "All network sources failed, loading fallback channels from assets")
+            val fallbackChannels = loadFallbackChannels()
+            if (fallbackChannels.isNotEmpty()) {
+                channelDao.insertAll(fallbackChannels)
+                totalChannels = fallbackChannels.size
+                successCount = 1  // 标记为部分成功，让 UI 能继续播放
+                errors.add("网络源全部失败，已加载内置备用频道")
+            }
+        }
+
         return RefreshResult(successCount, failCount, totalChannels, errors)
+    }
+
+    /**
+     * 从 assets 加载内置备用频道
+     * 当所有网络源都失败时（如中国移动网络封锁），确保用户仍能观看基本频道
+     */
+    private suspend fun loadFallbackChannels(): List<Channel> = withContext(Dispatchers.IO) {
+        try {
+            val content = context.assets.open("fallback_channels.m3u").bufferedReader().use { it.readText() }
+            val fallbackSource = Source(id = -1, name = "内置备用频道", url = "local://fallback")
+            val channels = M3UParser.parse(content, fallbackSource)
+            Log.i("ChannelRepository", "Loaded ${channels.size} fallback channels from assets")
+            channels.mapIndexed { i, ch -> ch.copy(channelNumber = i + 1) }
+        } catch (e: Exception) {
+            Log.e("ChannelRepository", "Failed to load fallback channels", e)
+            emptyList()
+        }
     }
 
     /**

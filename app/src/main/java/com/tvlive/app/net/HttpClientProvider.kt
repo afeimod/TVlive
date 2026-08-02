@@ -27,16 +27,17 @@ object HttpClientProvider {
 
     /**
      * 用于数据请求的 OkHttpClient（加载直播源、EPG 等）
-     * - 较长的超时时间（适配大文件下载）
-     * - 自定义 DNS
-     * - 连接失败自动重试
+     * - 短连接超时（5秒）：让失败的 URL 快速切换到下一个镜像
+     *   中国移动网络下可能有 9+ 个镜像 URL 需要尝试，5秒超时确保总时间可控
+     * - 较长读取超时（20秒）：适配大文件下载
+     * - 自定义 DNS + 连接失败自动重试
      */
     val dataClient: OkHttpClient = Builder()
         .dns(safeDns)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .connectionPool(connectionPool)
         .followRedirects(true)
