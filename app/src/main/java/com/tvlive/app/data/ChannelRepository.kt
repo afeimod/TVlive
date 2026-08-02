@@ -10,6 +10,7 @@ import com.tvlive.app.data.model.Source
 import com.tvlive.app.net.HttpClientProvider
 import com.tvlive.app.net.UrlHelper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -108,6 +109,7 @@ class ChannelRepository(private val context: Context) {
     /**
      * 从网络加载所有启用的源并解析频道
      *
+     * 使用并行加载：所有源同时请求，先完成的先插入数据库，让 UI 尽快显示频道
      * 如果所有网络源都失败（如中国移动网络封锁），会自动加载内置备用频道
      */
     suspend fun refreshAllSources(onProgress: ((current: Int, total: Int, sourceName: String) -> Unit)? = null): RefreshResult {
@@ -119,35 +121,45 @@ class ChannelRepository(private val context: Context) {
 
         channelDao.deleteAll()
 
-        sources.forEachIndexed { index, source ->
-            onProgress?.invoke(index + 1, sources.size, source.name)
-            try {
-                val content = fetchUrl(source.url)
-                val channels = M3UParser.parse(content, source)
+        onProgress?.invoke(0, sources.size, "正在加载...")
 
-                if (channels.isNotEmpty()) {
-                    // 分配频道号
-                    val channelsWithNumber = channels.mapIndexed { i, ch ->
-                        ch.copy(channelNumber = i + 1)
+        // 并行加载所有源
+        val results = kotlinx.coroutines.coroutineScope {
+            sources.map { source ->
+                kotlinx.coroutines.async(Dispatchers.IO) {
+                    try {
+                        val content = fetchUrl(source.url)
+                        val channels = M3UParser.parse(content, source)
+                        Triple(source, channels, null as Exception?)
+                    } catch (e: Exception) {
+                        Triple(source, emptyList<Channel>(), e)
                     }
-                    channelDao.insertAll(channelsWithNumber)
-                    totalChannels += channels.size
-                    successCount++
-
-                    // 更新源信息
-                    sourceDao.update(source.copy(
-                        lastUpdate = System.currentTimeMillis(),
-                        channelCount = channels.size
-                    ))
-                    Log.d("ChannelRepository", "Loaded ${channels.size} channels from ${source.name}")
-                } else {
-                    failCount++
-                    errors.add("${source.name}: 解析到0个频道")
                 }
-            } catch (e: Exception) {
+            }.awaitAll()
+        }
+
+        // 按顺序处理结果（先成功的先插入）
+        results.forEachIndexed { index, (source, channels, error) ->
+            onProgress?.invoke(index + 1, sources.size, source.name)
+            if (error != null) {
                 failCount++
-                errors.add("${source.name}: ${e.message}")
-                Log.e("ChannelRepository", "Failed to load source ${source.name}", e)
+                errors.add("${source.name}: ${error.message}")
+                Log.e("ChannelRepository", "Failed to load source ${source.name}", error)
+            } else if (channels.isNotEmpty()) {
+                val channelsWithNumber = channels.mapIndexed { i, ch ->
+                    ch.copy(channelNumber = i + 1)
+                }
+                channelDao.insertAll(channelsWithNumber)
+                totalChannels += channels.size
+                successCount++
+                sourceDao.update(source.copy(
+                    lastUpdate = System.currentTimeMillis(),
+                    channelCount = channels.size
+                ))
+                Log.d("ChannelRepository", "Loaded ${channels.size} channels from ${source.name}")
+            } else {
+                failCount++
+                errors.add("${source.name}: 解析到0个频道")
             }
         }
 

@@ -55,6 +55,7 @@ class MainActivity : AppCompatActivity() {
     private var channels: List<Channel> = emptyList()
     private var currentIndex = 0
     private var hasAutoPlayed = false
+    private var isRefreshingSources = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val infoHideRunnable = Runnable { hideChannelInfo() }
@@ -174,16 +175,25 @@ class MainActivity : AppCompatActivity() {
     private fun handleRefreshState(state: RefreshState) {
         when (state) {
             is RefreshState.Idle -> {
-                binding.loadingView.visibility = View.GONE
+                isRefreshingSources = false
+                // 只有未在播放时才隐藏加载遮罩
+                if (!hasAutoPlayed) {
+                    binding.loadingView.visibility = View.GONE
+                }
             }
             is RefreshState.Loading -> {
-                binding.loadingView.visibility = View.VISIBLE
-                binding.tvLoadingText.text = getString(
-                    R.string.status_loading, state.current, state.total, state.sourceName
-                )
+                isRefreshingSources = true
+                // 只有还没开始播放时才显示刷新加载遮罩
+                // 已开始播放后，加载遮罩由播放器回调控制（onLoading/onReady）
+                if (!hasAutoPlayed) {
+                    binding.loadingView.visibility = View.VISIBLE
+                    binding.tvLoadingText.text = getString(
+                        R.string.status_loading, state.current, state.total, state.sourceName
+                    )
+                }
             }
             is RefreshState.Done -> {
-                binding.loadingView.visibility = View.GONE
+                isRefreshingSources = false
 
                 getSharedPreferences("tvlive_prefs", MODE_PRIVATE)
                     .edit().putBoolean("sources_loaded", true).apply()
@@ -199,7 +209,9 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                if (state.result.failCount > 0 && state.result.successCount == 0) {
+                // 只有未在播放时才显示错误
+                if (state.result.failCount > 0 && state.result.successCount == 0 && !hasAutoPlayed) {
+                    binding.loadingView.visibility = View.GONE
                     binding.errorView.visibility = View.VISIBLE
                     binding.tvErrorText.text = getString(R.string.status_empty)
                 }
@@ -350,8 +362,11 @@ class MainActivity : AppCompatActivity() {
     // ==================== 刷新源 ====================
 
     private fun refreshSourcesAndPlay() {
+        // 手动刷新时重置播放状态，允许加载遮罩显示
+        hasAutoPlayed = false
         binding.loadingView.visibility = View.VISIBLE
         binding.tvLoadingText.text = getString(R.string.action_refresh)
+        binding.errorView.visibility = View.GONE
         viewModel.refreshSources()
     }
 
