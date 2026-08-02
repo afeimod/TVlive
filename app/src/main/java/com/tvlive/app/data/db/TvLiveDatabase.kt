@@ -11,7 +11,7 @@ import com.tvlive.app.data.model.Source
 
 @Database(
     entities = [Channel::class, Source::class, PlayHistory::class],
-    version = 2,  // v2: 清除旧版GitHub源, 改用本地源+国内直连源
+    version = 1,
     exportSchema = false
 )
 abstract class TvLiveDatabase : RoomDatabase() {

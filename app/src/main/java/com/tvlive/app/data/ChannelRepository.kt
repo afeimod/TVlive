@@ -42,55 +42,18 @@ class ChannelRepository(private val context: Context) {
 
     // ==================== 源管理 ====================
 
-    /**
-     * 初始化默认源
-     * 本地离线源为默认主源 (不需要网络即可加载)
-     * 在线国内直连源为备用 (网络可用时获取更多频道)
-     */
+    /** 初始化默认源 (仅内置本地源) */
     suspend fun initDefaultSources() {
-        // 1. 本地离线源 (默认主源, 不需要网络)
-        if (sourceDao.getByName(ASSET_SOURCE_NAME) == null) {
+        if (sourceDao.count() == 0) {
+            // 插入内置本地源
             val localSource = Source(
                 name = ASSET_SOURCE_NAME,
-                url = "assets://$ASSET_FILE",
+                url = "assets://$ASSET_FILE",  // 特殊协议标记本地源
                 isDefault = true,
                 enabled = true
             )
             sourceDao.insert(localSource)
-            Log.d("ChannelRepository", "Inserted local source (default): $ASSET_SOURCE_NAME")
-        }
-
-        // 2. 在线国内直连源 (备用, zbds.top 不经过GitHub)
-        if (sourceDao.getByName(DefaultSources.ONLINE_SOURCE_NAME) == null &&
-            sourceDao.getByUrl(DefaultSources.ONLINE_SOURCE_URL) == null) {
-            val onlineSource = Source(
-                name = DefaultSources.ONLINE_SOURCE_NAME,
-                url = DefaultSources.ONLINE_SOURCE_URL,
-                isDefault = false,
-                enabled = true
-            )
-            sourceDao.insert(onlineSource)
-            Log.d("ChannelRepository", "Inserted online source: ${DefaultSources.ONLINE_SOURCE_NAME}")
-        }
-
-        // 3. 清除可能残留的旧版GitHub源 (URL包含githubusercontent)
-        val allSources = sourceDao.getAllSourcesStatic()
-        allSources.forEach { source ->
-            if (source.url.contains("githubusercontent.com") ||
-                source.url.contains("raw.githubusercontent.com") ||
-                source.url.contains("gh-proxy.com") ||
-                source.url.contains("ghfast.top")) {
-                Log.d("ChannelRepository", "Removing old GitHub source: ${source.name}")
-                channelDao.deleteBySource(source.id)
-                sourceDao.delete(source)
-            }
-        }
-
-        // 4. 确保至少有一个默认源
-        val enabled = sourceDao.getEnabledSources()
-        if (enabled.none { it.isDefault } && enabled.isNotEmpty()) {
-            sourceDao.clearDefault()
-            sourceDao.setDefault(enabled.first().id)
+            Log.d("ChannelRepository", "Inserted local source: $ASSET_SOURCE_NAME")
         }
     }
 
@@ -125,10 +88,7 @@ class ChannelRepository(private val context: Context) {
     suspend fun refreshAllSources(onProgress: ((current: Int, total: Int, sourceName: String) -> Unit)? = null): RefreshResult {
         initDefaultSources()
 
-        val sources = getEnabledSources().sortedBy { source ->
-            // 本地源优先 (assets:// 排在前面), 在线源排后面
-            if (source.url.startsWith("assets://")) 0 else 1
-        }
+        val sources = getEnabledSources()
         var totalChannels = 0
         var successCount = 0
         var failCount = 0
@@ -143,8 +103,8 @@ class ChannelRepository(private val context: Context) {
                     // 本地 assets 源
                     loadFromAssets(source.url.removePrefix("assets://"))
                 } else {
-                    // 在线源 (带代理回退)
-                    fetchUrlWithFallback(source.url)
+                    // 在线源
+                    fetchUrl(source.url)
                 }
 
                 val channels = M3UParser.parse(content, source)
@@ -191,7 +151,7 @@ class ChannelRepository(private val context: Context) {
             val content = if (source.url.startsWith("assets://")) {
                 loadFromAssets(source.url.removePrefix("assets://"))
             } else {
-                fetchUrlWithFallback(source.url)
+                fetchUrl(source.url)
             }
             val channels = M3UParser.parse(content, source)
             channelDao.deleteBySource(source.id)
@@ -222,25 +182,6 @@ class ChannelRepository(private val context: Context) {
                 throw RuntimeException("HTTP ${response.code}")
             }
             response.body?.string() ?: throw RuntimeException("空响应")
-        }
-    }
-
-    /**
-     * 带回退的URL获取
-     * 在线源失败时自动回退到本地 assets 源
-     */
-    private suspend fun fetchUrlWithFallback(primaryUrl: String): String = withContext(Dispatchers.IO) {
-        try {
-            fetchUrl(primaryUrl)
-        } catch (e: Exception) {
-            Log.w("ChannelRepository", "在线源失败, 尝试本地源: ${e.message}")
-            // 在线源失败, 回退到本地 assets 源
-            try {
-                loadFromAssets(ASSET_FILE)
-            } catch (e2: Exception) {
-                Log.e("ChannelRepository", "本地源也失败", e2)
-                throw e  // 返回原始错误
-            }
         }
     }
 
