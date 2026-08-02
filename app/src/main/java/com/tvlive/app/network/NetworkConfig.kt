@@ -93,11 +93,10 @@ object NetworkConfig {
             return addresses.sortedByDescending { it.address.size == 4 }
         }
 
-    }
-
-    /** 清除DNS缓存 (切换源或播放失败时可调用) */
-    fun clearDnsCache() {
-        dnsCache.clear()
+        /** 清除DNS缓存 (切换源时可调用) */
+        fun clearDnsCache() {
+            dnsCache.clear()
+        }
     }
 
     /**
