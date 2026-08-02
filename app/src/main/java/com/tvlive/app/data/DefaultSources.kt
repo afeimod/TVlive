@@ -3,7 +3,7 @@ package com.tvlive.app.data
 /**
  * 默认内置直播源
  *
- * 使用 GitHub 代理地址访问 iptv-org 中国频道源, 避免直接访问 GitHub
+ * 使用国内直连源 (zbds.top), 不依赖 GitHub
  * 同时保留 assets 本地源作为离线备用
  */
 object DefaultSources {
@@ -13,11 +13,9 @@ object DefaultSources {
     const val LOCAL_SOURCE_NAME = "内置中国频道源(离线)"
 
     /**
-     * iptv-org 中国频道在线源 (通过 GitHub 代理访问)
-     * 代理1: gh-proxy.com
-     * 代理2: ghfast.top (备用)
+     * 国内直连在线源 (不经过 GitHub)
+     * zbds.top: 国内服务器, IPv4/IPv6 双栈, 自带台标和EPG
      */
-    const val ONLINE_SOURCE_NAME = "iptv-org中国频道(代理)"
-    const val ONLINE_SOURCE_URL_1 = "https://gh-proxy.com/https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"
-    const val ONLINE_SOURCE_URL_2 = "https://ghfast.top/https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"
+    const val ONLINE_SOURCE_NAME = "国内直播源(zbds)"
+    const val ONLINE_SOURCE_URL = "https://live.zbds.top/tv/iptv4.m3u"
 }

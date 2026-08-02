@@ -42,20 +42,26 @@ class ChannelRepository(private val context: Context) {
 
     // ==================== 源管理 ====================
 
-    /** 初始化默认源 (本地源 + 在线代理源) */
+    /**
+     * 初始化默认源 (本地源 + 在线国内直连源)
+     * 每次启动检查, 补充缺失的源 (兼容旧版本升级)
+     */
     suspend fun initDefaultSources() {
-        if (sourceDao.count() == 0) {
-            // 1. 在线代理源 (优先, 频道更多更全)
+        // 1. 确保在线国内直连源存在 (zbds.top, 不经过GitHub)
+        if (sourceDao.getByName(DefaultSources.ONLINE_SOURCE_NAME) == null &&
+            sourceDao.getByUrl(DefaultSources.ONLINE_SOURCE_URL) == null) {
             val onlineSource = Source(
                 name = DefaultSources.ONLINE_SOURCE_NAME,
-                url = DefaultSources.ONLINE_SOURCE_URL_1,
-                isDefault = true,
+                url = DefaultSources.ONLINE_SOURCE_URL,
+                isDefault = sourceDao.count() == 0,  // 首次安装设为默认
                 enabled = true
             )
             sourceDao.insert(onlineSource)
-            Log.d("ChannelRepository", "Inserted online proxy source: ${DefaultSources.ONLINE_SOURCE_NAME}")
+            Log.d("ChannelRepository", "Inserted online source: ${DefaultSources.ONLINE_SOURCE_NAME}")
+        }
 
-            // 2. 本地离线源 (备用)
+        // 2. 确保本地离线源存在 (备用)
+        if (sourceDao.getByName(ASSET_SOURCE_NAME) == null) {
             val localSource = Source(
                 name = ASSET_SOURCE_NAME,
                 url = "assets://$ASSET_FILE",
@@ -64,6 +70,16 @@ class ChannelRepository(private val context: Context) {
             )
             sourceDao.insert(localSource)
             Log.d("ChannelRepository", "Inserted local source: $ASSET_SOURCE_NAME")
+        }
+
+        // 3. 如果没有任何源设为默认, 将在线源设为默认
+        if (sourceDao.count() > 0) {
+            val enabled = sourceDao.getEnabledSources()
+            if (enabled.none { it.isDefault } && enabled.isNotEmpty()) {
+                val firstEnabled = enabled.first()
+                sourceDao.clearDefault()
+                sourceDao.setDefault(firstEnabled.id)
+            }
         }
     }
 
@@ -196,26 +212,20 @@ class ChannelRepository(private val context: Context) {
     }
 
     /**
-     * 带代理回退的URL获取
-     * 如果主代理失败, 自动尝试备用代理地址
+     * 带回退的URL获取
+     * 在线源失败时自动回退到本地 assets 源
      */
     private suspend fun fetchUrlWithFallback(primaryUrl: String): String = withContext(Dispatchers.IO) {
         try {
             fetchUrl(primaryUrl)
         } catch (e: Exception) {
-            Log.w("ChannelRepository", "主代理失败, 尝试备用代理: ${e.message}")
-            // 如果是 gh-proxy.com 的URL, 尝试 ghfast.top
-            val backupUrl = when {
-                primaryUrl.contains("gh-proxy.com") ->
-                    primaryUrl.replace("gh-proxy.com", "ghfast.top")
-                primaryUrl.contains("ghfast.top") ->
-                    primaryUrl.replace("ghfast.top", "gh-proxy.com")
-                else -> null
-            }
-            if (backupUrl != null) {
-                fetchUrl(backupUrl)
-            } else {
-                throw e
+            Log.w("ChannelRepository", "在线源失败, 尝试本地源: ${e.message}")
+            // 在线源失败, 回退到本地 assets 源
+            try {
+                loadFromAssets(ASSET_FILE)
+            } catch (e2: Exception) {
+                Log.e("ChannelRepository", "本地源也失败", e2)
+                throw e  // 返回原始错误
             }
         }
     }

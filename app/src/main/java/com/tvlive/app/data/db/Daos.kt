@@ -50,6 +50,12 @@ interface SourceDao {
     @Query("SELECT * FROM sources WHERE id = :id")
     suspend fun getById(id: Long): Source?
 
+    @Query("SELECT * FROM sources WHERE name = :name LIMIT 1")
+    suspend fun getByName(name: String): Source?
+
+    @Query("SELECT * FROM sources WHERE url = :url LIMIT 1")
+    suspend fun getByUrl(url: String): Source?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(source: Source): Long
 
