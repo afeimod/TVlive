@@ -303,8 +303,11 @@ class SafeDns : Dns {
                         val ipBytes = ByteArray(4)
                         var valid = true
                         for (j in 0 until 4) {
-                            val b = ipParts[j].toIntOrNull() ?: run { valid = false; break }
-                            if (b !in 0..255) { valid = false; break }
+                            val b = ipParts[j].toIntOrNull()
+                            if (b == null || b !in 0..255) {
+                                valid = false
+                                break
+                            }
                             ipBytes[j] = b.toByte()
                         }
                         if (valid) {
