@@ -3,173 +3,166 @@ package com.tvlive.app.ui.main
 import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
-import android.text.Editable
-import android.text.TextWatcher
-import android.view.Gravity
+import android.os.Handler
+import android.os.Looper
+import android.view.GestureDetector
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
-import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import androidx.recyclerview.widget.GridLayoutManager
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.recyclerview.widget.LinearLayoutManager
 import com.tvlive.app.R
+import com.tvlive.app.TvLiveApp
 import com.tvlive.app.data.model.Channel
-import com.tvlive.app.data.model.PlayHistory
 import com.tvlive.app.databinding.ActivityMainBinding
+import com.tvlive.app.databinding.ItemChannelOverlayBinding
+import com.tvlive.app.player.TvPlayerManager
 import com.tvlive.app.ui.RefreshState
 import com.tvlive.app.ui.MainViewModel
-import com.tvlive.app.ui.player.PlayerActivity
+import com.tvlive.app.ui.settings.SettingsActivity
+import com.tvlive.app.ui.settings.SourceManagerActivity
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+/**
+ * 主界面 - 全屏直播播放器
+ *
+ * 启动后自动刷新直播源并播放 CCTV-1
+ * 点击屏幕或遥控器确认键调出菜单面板
+ * 菜单包含：切台、频道列表、收藏、画面比例、刷新源、搜索、源管理、设置、退出
+ * 遥控器：上下=切台, 左右=频道列表, 确认=菜单, 数字=选台, 音量键=调音量
+ */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val viewModel: MainViewModel by viewModels()
+    private lateinit var playerManager: TvPlayerManager
+    private lateinit var overlayAdapter: ChannelOverlayAdapter
+    private lateinit var gestureDetector: GestureDetector
 
-    private val adapter: ChannelGridAdapter = ChannelGridAdapter(
-        onClick = { channel, position, list ->
-            launchPlayer(list, position)
-            viewModel.addHistory(channel)
-        },
-        onLongClick = { channel, _ ->
-            viewModel.toggleFavorite(channel)
-            Toast.makeText(
-                this,
-                if (channel.favorite) R.string.action_unfavorite else R.string.action_favorite,
-                Toast.LENGTH_SHORT
-            ).show()
+    private var channels: List<Channel> = emptyList()
+    private var currentIndex = 0
+    private var hasAutoPlayed = false
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val infoHideRunnable = Runnable { hideChannelInfo() }
+    private val hintHideRunnable = Runnable { binding.hintView.visibility = View.GONE }
+    private val numberInputRunnable = Runnable { submitNumberInput() }
+    private val settingsHideRunnable = Runnable { hideSettingsPanel() }
+
+    private var numberInput = StringBuilder()
+    private var isChannelListVisible = false
+    private var isSettingsPanelVisible = false
+
+    // 画面比例循环: FIT -> FILL -> 16:9 -> 4:3
+    private val aspectModes = intArrayOf(
+        AspectRatioFrameLayout.RESIZE_MODE_FIT,
+        AspectRatioFrameLayout.RESIZE_MODE_FILL,
+        AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH,
+        AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT
+    )
+    private val aspectNames = intArrayOf(
+        R.string.menu_aspect_fit,
+        R.string.menu_aspect_fill,
+        R.string.menu_aspect_16_9,
+        R.string.menu_aspect_4_3
+    )
+    private var aspectIndex = 0
+
+    // 播放器回调
+    private val onError: (String) -> Unit = { msg ->
+        runOnUiThread {
+            binding.loadingView.visibility = View.GONE
+            binding.errorView.visibility = View.VISIBLE
+            binding.tvErrorText.text = msg
         }
-    )
-
-    /** 当前 Tab 过滤值: null=全部, 分组名=按组过滤, favorites/history=特殊 */
-    private var currentFilter: String? = null
-    private var searchKeyword: String? = null
-
-    private var allChannelList: List<Channel> = emptyList()
-    private var favList: List<Channel> = emptyList()
-    private var historyList: List<PlayHistory> = emptyList()
-    private var isLoading = false
-    private var hasAutoPlayed = false  // 首次自动播放标记
-
-    private val tabs = listOf(
-        Tab(R.string.tab_all, null),
-        Tab(R.string.tab_cctv, Channel.GROUP_CCTV),
-        Tab(R.string.tab_satellite, Channel.GROUP_SATELLITE),
-        Tab(R.string.tab_local, Channel.GROUP_LOCAL),
-        Tab(R.string.tab_hk, Channel.GROUP_HK_MACAO_TW),
-        Tab(R.string.tab_international, Channel.GROUP_INTERNATIONAL),
-        Tab(R.string.tab_favorites, FILTER_FAVORITES),
-        Tab(R.string.tab_history, FILTER_HISTORY)
-    )
-    private val tabViews = mutableListOf<TextView>()
+    }
+    private val onLoading: () -> Unit = {
+        runOnUiThread {
+            binding.loadingView.visibility = View.VISIBLE
+            binding.errorView.visibility = View.GONE
+        }
+    }
+    private val onReady: () -> Unit = {
+        runOnUiThread {
+            binding.loadingView.visibility = View.GONE
+            binding.errorView.visibility = View.GONE
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        setupRecyclerView()
-        setupTabs()
-        setupListeners()
+        // 沉浸式全屏
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        )
+
+        playerManager = TvPlayerManager(this).apply {
+            this.onError = this@MainActivity.onError
+            this.onLoading = this@MainActivity.onLoading
+            this.onReady = this@MainActivity.onReady
+        }
+
+        setupChannelList()
+        setupRetryButton()
+        setupSettingsPanel()
+        setupGestureDetector()
         observeData()
 
         // 首次启动自动刷新源
         val prefs = getSharedPreferences("tvlive_prefs", MODE_PRIVATE)
         if (!prefs.getBoolean("sources_loaded", false)) {
             viewModel.refreshSources()
+        } else {
+            // 已有缓存数据，直接加载播放
+            loadCachedChannelsAndPlay()
         }
+
+        showHint()
     }
 
-    private fun setupRecyclerView() {
-        binding.rvChannels.layoutManager = GridLayoutManager(this, 6)
-        binding.rvChannels.adapter = adapter
-        binding.rvChannels.setHasFixedSize(false)
-    }
-
-    private fun setupTabs() {
-        binding.tabContainer.removeAllViews()
-        tabViews.clear()
-        tabs.forEachIndexed { index, tab ->
-            val tv = TextView(this)
-            tv.applyTabStyle()
-            tv.text = getString(tab.labelRes)
-            tv.tag = tab.filterValue
-            tv.isSelected = index == 0
-            tv.setOnClickListener { selectTab(index) }
-            tv.setOnFocusChangeListener { _, hasFocus ->
-                if (hasFocus) selectTab(index)
+    /** 从数据库加载已缓存的频道并自动播放 CCTV-1 */
+    private fun loadCachedChannelsAndPlay() {
+        lifecycleScope.launch {
+            channels = viewModel.allChannels.first()
+            if (channels.isNotEmpty()) {
+                overlayAdapter.submit(channels)
+                autoPlayCctv1()
+            } else {
+                // 缓存为空，重新刷新
+                viewModel.refreshSources()
             }
-            binding.tabContainer.addView(tv)
-            tabViews.add(tv)
         }
     }
 
-    private fun TextView.applyTabStyle() {
-        val lp = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply {
-            marginStart = 6
-            marginEnd = 6
-        }
-        layoutParams = lp
-        setPadding(40, 16, 40, 16)
-        gravity = Gravity.CENTER
-        setTextColor(ContextCompat.getColor(context, R.color.text_primary))
-        setBackgroundResource(R.drawable.bg_tab_selector)
-        isFocusable = true
-        isClickable = true
-        textSize = 14f
-    }
-
-    private fun selectTab(index: Int) {
-        searchKeyword = null
-        currentFilter = tabs[index].filterValue
-        tabViews.forEachIndexed { i, v -> v.isSelected = i == index }
-        applyFilter()
-    }
-
-    private fun setupListeners() {
-        binding.btnRefresh.setOnClickListener {
-            viewModel.refreshSources()
-        }
-        binding.btnRefreshSources.setOnClickListener {
-            viewModel.refreshSources()
-        }
-        binding.btnSearch.setOnClickListener {
-            showSearchDialog()
-        }
-        binding.btnSettings.setOnClickListener {
-            startActivity(Intent(this, com.tvlive.app.ui.settings.SettingsActivity::class.java))
-        }
-    }
+    // ==================== 数据观察 ====================
 
     private fun observeData() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     viewModel.allChannels.collect { list ->
-                        allChannelList = list
-                        applyFilter()
-                    }
-                }
-                launch {
-                    viewModel.favorites.collect { list ->
-                        favList = list
-                        if (currentFilter == FILTER_FAVORITES) applyFilter()
-                    }
-                }
-                launch {
-                    viewModel.history.collect { list ->
-                        historyList = list
-                        if (currentFilter == FILTER_HISTORY) applyFilter()
+                        if (list.isNotEmpty()) {
+                            channels = list
+                            overlayAdapter.submit(channels)
+                            if (!hasAutoPlayed) {
+                                autoPlayCctv1()
+                            }
+                        }
                     }
                 }
                 launch {
@@ -182,108 +175,319 @@ class MainActivity : AppCompatActivity() {
     private fun handleRefreshState(state: RefreshState) {
         when (state) {
             is RefreshState.Idle -> {
-                isLoading = false
-                binding.progressBar.visibility = View.GONE
-                updateStatus(adapter.itemCount)
+                binding.loadingView.visibility = View.GONE
             }
             is RefreshState.Loading -> {
-                isLoading = true
-                binding.progressBar.visibility = View.VISIBLE
-                binding.tvStatus.text = getString(
+                binding.loadingView.visibility = View.VISIBLE
+                binding.tvLoadingText.text = getString(
                     R.string.status_loading, state.current, state.total, state.sourceName
                 )
-                binding.emptyView.visibility = View.GONE
             }
             is RefreshState.Done -> {
-                isLoading = false
-                binding.progressBar.visibility = View.GONE
-                binding.tvStatus.text = getString(
-                    R.string.status_done, state.result.successCount, state.result.totalChannels
-                )
-                binding.emptyView.visibility =
-                    if (adapter.itemCount == 0) View.VISIBLE else View.GONE
+                binding.loadingView.visibility = View.GONE
 
-                // 标记已加载，首次刷新后自动进入 CCTV-1 播放
                 getSharedPreferences("tvlive_prefs", MODE_PRIVATE)
                     .edit().putBoolean("sources_loaded", true).apply()
-                if (!hasAutoPlayed && state.result.totalChannels > 0) {
-                    hasAutoPlayed = true
-                    autoPlayCctv1()
+
+                if (state.result.totalChannels > 0 && !hasAutoPlayed) {
+                    // 重新加载频道列表
+                    lifecycleScope.launch {
+                        channels = viewModel.allChannels.first()
+                        if (channels.isNotEmpty()) {
+                            overlayAdapter.submit(channels)
+                            autoPlayCctv1()
+                        }
+                    }
+                }
+
+                if (state.result.failCount > 0 && state.result.successCount == 0) {
+                    binding.errorView.visibility = View.VISIBLE
+                    binding.tvErrorText.text = getString(R.string.status_empty)
                 }
             }
         }
     }
 
-    /** 根据当前 Tab / 搜索关键词计算并刷新频道列表 */
-    private fun applyFilter() {
-        val base: List<Channel> = when {
-            searchKeyword != null ->
-                allChannelList.filter {
-                    it.name.contains(searchKeyword!!, ignoreCase = true)
+    // ==================== 频道列表覆盖层 ====================
+
+    private fun setupChannelList() {
+        overlayAdapter = ChannelOverlayAdapter(
+            channels = mutableListOf(),
+            onSelect = { position ->
+                if (position in channels.indices) {
+                    currentIndex = position
+                    playCurrent()
+                    hideChannelList()
                 }
-            currentFilter == null -> allChannelList
-            currentFilter == FILTER_FAVORITES -> favList
-            currentFilter == FILTER_HISTORY ->
-                historyList.mapNotNull { h ->
-                    allChannelList.find { it.id == h.channelId }
-                        ?: Channel(
-                            id = h.channelId,
-                            name = h.channelName,
-                            url = h.channelUrl
-                        )
+            }
+        )
+        binding.rvChannelList.apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            adapter = overlayAdapter
+            setHasFixedSize(true)
+        }
+    }
+
+    private fun showChannelList() {
+        isChannelListVisible = true
+        binding.channelListOverlay.visibility = View.VISIBLE
+        binding.channelInfoOverlay.visibility = View.VISIBLE
+        handler.removeCallbacks(infoHideRunnable)
+
+        binding.rvChannelList.post {
+            overlayAdapter.setCurrentIndex(currentIndex)
+            binding.rvChannelList.smoothScrollToPosition(currentIndex)
+            val vh = binding.rvChannelList.findViewHolderForAdapterPosition(currentIndex)
+            vh?.itemView?.requestFocus()
+        }
+    }
+
+    private fun hideChannelList() {
+        isChannelListVisible = false
+        binding.channelListOverlay.visibility = View.GONE
+        handler.postDelayed(infoHideRunnable, 4000)
+    }
+
+    private fun toggleChannelList() {
+        if (isChannelListVisible) hideChannelList() else showChannelList()
+    }
+
+    // ==================== 设置菜单面板 ====================
+
+    private fun setupRetryButton() {
+        binding.btnRetry.setOnClickListener { playCurrent() }
+    }
+
+    private fun setupSettingsPanel() {
+        binding.btnPrevChannel.setOnClickListener { switchChannel(-1); hideSettingsPanel() }
+        binding.btnNextChannel.setOnClickListener { switchChannel(1); hideSettingsPanel() }
+        binding.btnChannelList.setOnClickListener { hideSettingsPanel(); showChannelList() }
+        binding.btnFavorite.setOnClickListener { toggleFavorite() }
+        binding.btnAspectRatio.setOnClickListener { cycleAspectRatio() }
+        binding.btnRefreshSource.setOnClickListener {
+            hideSettingsPanel()
+            refreshSourcesAndPlay()
+        }
+        binding.btnSearch.setOnClickListener {
+            hideSettingsPanel()
+            showSearchDialog()
+        }
+        binding.btnSourceManager.setOnClickListener {
+            startActivity(Intent(this, SourceManagerActivity::class.java))
+        }
+        binding.btnSettings.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        binding.btnExit.setOnClickListener { finish() }
+
+        // 设置面板按钮焦点处理
+        listOf(
+            binding.btnPrevChannel, binding.btnNextChannel, binding.btnChannelList,
+            binding.btnFavorite, binding.btnAspectRatio, binding.btnRefreshSource,
+            binding.btnSearch, binding.btnSourceManager, binding.btnSettings, binding.btnExit
+        ).forEach { view ->
+            view.setOnFocusChangeListener { v, hasFocus ->
+                v.alpha = if (hasFocus) 1.0f else 0.7f
+            }
+        }
+    }
+
+    private fun showSettingsPanel() {
+        isSettingsPanelVisible = true
+        binding.settingsPanel.visibility = View.VISIBLE
+        handler.removeCallbacks(settingsHideRunnable)
+        // 更新收藏图标
+        val channel = channels.getOrNull(currentIndex)
+        binding.ivMenuFavorite.setImageResource(
+            if (channel?.favorite == true) R.drawable.ic_star_on else R.drawable.ic_star_off
+        )
+        // 聚焦第一个按钮
+        binding.btnPrevChannel.requestFocus()
+    }
+
+    private fun hideSettingsPanel() {
+        isSettingsPanelVisible = false
+        binding.settingsPanel.visibility = View.GONE
+    }
+
+    private fun toggleSettingsPanel() {
+        if (isSettingsPanelVisible) hideSettingsPanel() else showSettingsPanel()
+    }
+
+    private fun cycleAspectRatio() {
+        aspectIndex = (aspectIndex + 1) % aspectModes.size
+        binding.playerView.resizeMode = aspectModes[aspectIndex]
+        binding.tvAspectRatio.text = getString(aspectNames[aspectIndex])
+    }
+
+    // ==================== 手势/触控 ====================
+
+    private fun setupGestureDetector() {
+        gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                // 点击屏幕显示菜单
+                if (!isSettingsPanelVisible && !isChannelListVisible) {
+                    showSettingsPanel()
+                } else if (isSettingsPanelVisible) {
+                    hideSettingsPanel()
+                } else if (isChannelListVisible) {
+                    hideChannelList()
                 }
-            else -> allChannelList.filter { it.group == currentFilter }
-        }
+                return true
+            }
 
-        adapter.submit(base)
-
-        // 空状态显示 (加载中不显示空状态)
-        binding.emptyView.visibility =
-            if (base.isEmpty() && !isLoading) View.VISIBLE else View.GONE
-
-        updateStatus(base.size)
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                // 双击切下一个频道
+                switchChannel(1)
+                return true
+            }
+        })
     }
 
-    private fun updateStatus(count: Int) {
-        if (isLoading) return
-        binding.tvStatus.text = if (searchKeyword != null) {
-            getString(R.string.status_no_result) + " ($count)"
-        } else {
-            "共 $count 个频道"
-        }
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        return gestureDetector.onTouchEvent(event) || super.onTouchEvent(event)
     }
 
-    private fun launchPlayer(list: List<Channel>, position: Int) {
-        if (list.isEmpty()) return
-        val ids = list.map { it.id }.toLongArray()
-        if (ids.isEmpty()) return
-        val pos = position.coerceIn(0, ids.size - 1)
-        val intent = Intent(this, PlayerActivity::class.java).apply {
-            putExtra(PlayerActivity.EXTRA_CHANNEL_IDS, ids)
-            putExtra(PlayerActivity.EXTRA_POSITION, pos)
-        }
-        startActivity(intent)
+    // ==================== 刷新源 ====================
+
+    private fun refreshSourcesAndPlay() {
+        binding.loadingView.visibility = View.VISIBLE
+        binding.tvLoadingText.text = getString(R.string.action_refresh)
+        viewModel.refreshSources()
     }
+
+    // ==================== 播放控制 ====================
 
     /**
-     * 首次启动后自动进入 CCTV-1 播放
-     * 在央视频道中查找 CCTV-1 综合
+     * 自动播放 CCTV-1
+     * 在频道列表中查找 CCTV-1 综合，找不到则播放第一个央视频道
      */
     private fun autoPlayCctv1() {
-        if (allChannelList.isEmpty()) return
-        // 优先查找 CCTV-1 综合
-        val cctv1 = allChannelList.find {
+        if (channels.isEmpty()) return
+        hasAutoPlayed = true
+
+        val cctv1 = channels.find {
             it.name.contains("CCTV-1", true) ||
             it.name.contains("CCTV1", true) ||
             it.name.contains("央视一套", true) ||
             it.name.contains("中央一套", true)
-        } ?: allChannelList.find {
+        } ?: channels.find {
             it.group == Channel.GROUP_CCTV
-        } ?: allChannelList.first()
+        } ?: channels.first()
 
-        val position = allChannelList.indexOf(cctv1)
-        launchPlayer(allChannelList, position)
+        currentIndex = channels.indexOf(cctv1)
+        playCurrent()
     }
+
+    private fun playCurrent() {
+        val channel = channels.getOrNull(currentIndex) ?: return
+        updateChannelInfo(channel)
+        overlayAdapter.setCurrentIndex(currentIndex)
+
+        binding.loadingView.visibility = View.VISIBLE
+        binding.errorView.visibility = View.GONE
+
+        playerManager.play(channel.url)
+        binding.playerView.player = playerManager.player
+
+        lifecycleScope.launch {
+            TvLiveApp.instance.repository.addHistory(channel)
+        }
+    }
+
+    private fun switchChannel(delta: Int) {
+        if (channels.isEmpty()) return
+        currentIndex = (currentIndex + delta + channels.size) % channels.size
+        playCurrent()
+    }
+
+    private fun switchToIndex(index: Int) {
+        if (index !in channels.indices) return
+        currentIndex = index
+        playCurrent()
+    }
+
+    // ==================== 频道信息覆盖层 ====================
+
+    private fun updateChannelInfo(channel: Channel) {
+        binding.tvChannelNumber.text = if (channel.channelNumber > 0) {
+            channel.channelNumber.toString()
+        } else {
+            "${currentIndex + 1}"
+        }
+        binding.tvChannelName.text = channel.name
+        binding.tvChannelGroup.text = channel.group
+        binding.ivFavorite.setImageResource(
+            if (channel.favorite) R.drawable.ic_star_on else R.drawable.ic_star_off
+        )
+        showChannelInfo()
+    }
+
+    private fun showChannelInfo() {
+        binding.channelInfoOverlay.visibility = View.VISIBLE
+        handler.removeCallbacks(infoHideRunnable)
+        handler.postDelayed(infoHideRunnable, 4000)
+    }
+
+    private fun hideChannelInfo() {
+        if (!isChannelListVisible && !isSettingsPanelVisible) {
+            binding.channelInfoOverlay.visibility = View.GONE
+        }
+    }
+
+    // ==================== 数字键输入 ====================
+
+    private fun onNumberKey(digit: Int) {
+        numberInput.append(digit.toString())
+        binding.tvNumberInput.visibility = View.VISIBLE
+        binding.tvNumberInput.text = numberInput.toString()
+        handler.removeCallbacks(numberInputRunnable)
+        handler.postDelayed(numberInputRunnable, 1500)
+    }
+
+    private fun submitNumberInput() {
+        if (numberInput.isEmpty()) return
+        val num = numberInput.toString().toIntOrNull()
+        binding.tvNumberInput.visibility = View.GONE
+        numberInput.clear()
+
+        if (num != null && num > 0) {
+            val index = channels.indexOfFirst { it.channelNumber == num }
+            if (index >= 0) {
+                switchToIndex(index)
+            } else if (num <= channels.size) {
+                switchToIndex(num - 1)
+            }
+        }
+    }
+
+    // ==================== 收藏 ====================
+
+    private fun toggleFavorite() {
+        val channel = channels.getOrNull(currentIndex) ?: return
+        val newFav = !channel.favorite
+        lifecycleScope.launch {
+            TvLiveApp.instance.repository.setFavorite(channel, newFav)
+        }
+        channels = channels.mapIndexed { i, ch ->
+            if (i == currentIndex) ch.copy(favorite = newFav) else ch
+        }
+        binding.ivFavorite.setImageResource(
+            if (newFav) R.drawable.ic_star_on else R.drawable.ic_star_off
+        )
+        binding.ivMenuFavorite.setImageResource(
+            if (newFav) R.drawable.ic_star_on else R.drawable.ic_star_off
+        )
+        overlayAdapter.submit(channels)
+        overlayAdapter.setCurrentIndex(currentIndex)
+        Toast.makeText(
+            this,
+            if (newFav) R.string.action_favorite else R.string.action_unfavorite,
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    // ==================== 搜索 ====================
 
     private fun showSearchDialog() {
         val container = LinearLayout(this).apply {
@@ -302,32 +506,239 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 val keyword = editText.text.toString().trim()
                 if (keyword.isNotEmpty()) {
-                    searchKeyword = keyword
-                    applyFilter()
+                    searchAndPlay(keyword)
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
             .create()
 
-        // 输入即搜索：实时更新结果
-        editText.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: Editable?) {
-                val kw = s?.toString()?.trim().orEmpty()
-                searchKeyword = kw.ifEmpty { null }
-                applyFilter()
-            }
-        })
-
         dialog.show()
         editText.requestFocus()
     }
 
-    private data class Tab(val labelRes: Int, val filterValue: String?)
-
-    companion object {
-        const val FILTER_FAVORITES = "favorites"
-        const val FILTER_HISTORY = "history"
+    private fun searchAndPlay(keyword: String) {
+        val found = channels.find { it.name.contains(keyword, ignoreCase = true) }
+        if (found != null) {
+            currentIndex = channels.indexOf(found)
+            playCurrent()
+        } else {
+            Toast.makeText(this, R.string.status_no_result, Toast.LENGTH_SHORT).show()
+        }
     }
+
+    // ==================== 提示 ====================
+
+    private fun showHint() {
+        binding.hintView.visibility = View.VISIBLE
+        binding.hintView.text = getString(R.string.menu_hint_tv)
+        handler.postDelayed(hintHideRunnable, 5000)
+    }
+
+    // ==================== 遥控器/按键 ====================
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                // 上下键: 切换频道
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> {
+                    if (!isChannelListVisible && !isSettingsPanelVisible) {
+                        switchChannel(-1)
+                        return true
+                    }
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> {
+                    if (!isChannelListVisible && !isSettingsPanelVisible) {
+                        switchChannel(1)
+                        return true
+                    }
+                }
+                // 左右键: 显示频道列表
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (!isChannelListVisible && !isSettingsPanelVisible) {
+                        showChannelList()
+                        return true
+                    }
+                }
+                // 确认键: 显示/隐藏设置面板
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                    if (binding.errorView.visibility == View.VISIBLE) {
+                        playCurrent()
+                        return true
+                    }
+                    if (isChannelListVisible) {
+                        // 由 RecyclerView 焦点处理选中
+                    } else if (isSettingsPanelVisible) {
+                        // 由设置面板按钮处理
+                    } else {
+                        toggleSettingsPanel()
+                        return true
+                    }
+                }
+                // 数字键
+                KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_1, KeyEvent.KEYCODE_2,
+                KeyEvent.KEYCODE_3, KeyEvent.KEYCODE_4, KeyEvent.KEYCODE_5,
+                KeyEvent.KEYCODE_6, KeyEvent.KEYCODE_7, KeyEvent.KEYCODE_8,
+                KeyEvent.KEYCODE_9 -> {
+                    val digit = event.keyCode - KeyEvent.KEYCODE_0
+                    onNumberKey(digit)
+                    return true
+                }
+                // 返回键
+                KeyEvent.KEYCODE_BACK -> {
+                    when {
+                        binding.tvNumberInput.visibility == View.VISIBLE -> {
+                            handler.removeCallbacks(numberInputRunnable)
+                            numberInput.clear()
+                            binding.tvNumberInput.visibility = View.GONE
+                            return true
+                        }
+                        isSettingsPanelVisible -> {
+                            hideSettingsPanel()
+                            return true
+                        }
+                        isChannelListVisible -> {
+                            hideChannelList()
+                            return true
+                        }
+                        binding.channelInfoOverlay.visibility == View.VISIBLE -> {
+                            hideChannelInfo()
+                            return true
+                        }
+                        else -> {
+                            showSettingsPanel()
+                            return true
+                        }
+                    }
+                }
+                // 菜单键: 显示设置面板
+                KeyEvent.KEYCODE_MENU -> {
+                    toggleSettingsPanel()
+                    return true
+                }
+                // 收藏键
+                KeyEvent.KEYCODE_BOOKMARK, KeyEvent.KEYCODE_STAR -> {
+                    toggleFavorite()
+                    return true
+                }
+                // 音量键 - 交给 TvPlayerManager 处理，确保电视声音输出
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    playerManager.volumeUp()
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    playerManager.volumeDown()
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_MUTE -> {
+                    playerManager.toggleMute()
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    // ==================== 生命周期 ====================
+
+    override fun onStart() {
+        super.onStart()
+        playerManager.resume()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        playerManager.pause()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacks(infoHideRunnable)
+        handler.removeCallbacks(hintHideRunnable)
+        handler.removeCallbacks(numberInputRunnable)
+        handler.removeCallbacks(settingsHideRunnable)
+        playerManager.release()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            )
+        }
+    }
+}
+
+// ==================== 频道列表覆盖层适配器 ====================
+
+class ChannelOverlayAdapter(
+    private val channels: MutableList<Channel> = mutableListOf(),
+    private val onSelect: (Int) -> Unit
+) : androidx.recyclerview.widget.RecyclerView.Adapter<ChannelOverlayAdapter.ViewHolder>() {
+
+    private var currentIndex = -1
+
+    fun submit(list: List<Channel>) {
+        channels.clear()
+        channels.addAll(list)
+        notifyDataSetChanged()
+    }
+
+    fun setCurrentIndex(index: Int) {
+        val old = currentIndex
+        currentIndex = index
+        if (old >= 0) notifyItemChanged(old)
+        if (index >= 0) notifyItemChanged(index)
+    }
+
+    class ViewHolder(val binding: ItemChannelOverlayBinding) :
+        androidx.recyclerview.widget.RecyclerView.ViewHolder(binding.root)
+
+    override fun onCreateViewHolder(parent: android.view.ViewGroup, viewType: Int): ViewHolder {
+        val binding = ItemChannelOverlayBinding.inflate(
+            android.view.LayoutInflater.from(parent.context), parent, false
+        )
+        return ViewHolder(binding)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val channel = channels[position]
+        val b = holder.binding
+
+        b.tvChannelNumber.text = if (channel.channelNumber > 0) {
+            channel.channelNumber.toString()
+        } else {
+            (position + 1).toString()
+        }
+        b.tvChannelName.text = channel.name
+        b.ivFavorite.visibility = if (channel.favorite) View.VISIBLE else View.GONE
+
+        b.root.setBackgroundColor(
+            if (position == currentIndex) 0x33FF6B35.toInt() else 0x00000000
+        )
+
+        b.root.setOnClickListener { onSelect(position) }
+        b.root.setOnFocusChangeListener { v, hasFocus ->
+            v.setBackgroundColor(
+                when {
+                    hasFocus -> 0x660066CC.toInt()
+                    position == currentIndex -> 0x33FF6B35.toInt()
+                    else -> 0x00000000
+                }
+            )
+        }
+        b.root.setOnKeyListener { _, keyCode, event ->
+            if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
+                onSelect(position)
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    override fun getItemCount(): Int = channels.size
 }

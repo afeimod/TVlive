@@ -1,7 +1,10 @@
 package com.tvlive.app.player
 
 import android.content.Context
+import android.media.AudioManager
 import android.net.Uri
+import androidx.media3.common.AudioAttributes as Media3AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -25,6 +28,7 @@ class TvPlayerManager(private val context: Context) {
         private set
 
     private val okHttpClient = HttpClientProvider.playerClient
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     private var currentUrl: String? = null
     private var retryCount = 0
@@ -33,6 +37,18 @@ class TvPlayerManager(private val context: Context) {
     var onError: ((String) -> Unit)? = null
     var onLoading: (() -> Unit)? = null
     var onReady: (() -> Unit)? = null
+
+    /**
+     * Media3 AudioAttributes - 告诉系统这是媒体播放
+     * 确保：
+     * - 音量键调节媒体音量（而非铃声）
+     * - 音频通过 HDMI 路由到电视扬声器/音响
+     * - 与其他音频应用正确协调（如电话来电时降低音量）
+     */
+    private val mediaAudioAttributes = Media3AudioAttributes.Builder()
+        .setUsage(C.USAGE_MEDIA)
+        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+        .build()
 
     fun createPlayer(): ExoPlayer {
         val dataSourceFactory = DefaultDataSource.Factory(
@@ -43,6 +59,8 @@ class TvPlayerManager(private val context: Context) {
 
         return ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
+            .setAudioAttributes(mediaAudioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
             .build().apply {
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
@@ -123,6 +141,59 @@ class TvPlayerManager(private val context: Context) {
 
     fun resume() {
         player?.play()
+    }
+
+    // ==================== 音量控制（电视遥控器音量键） ====================
+
+    /**
+     * 增大音量（遥控器音量+键）
+     * 直接调节系统媒体音量流，确保电视扬声器/音响输出
+     */
+    fun volumeUp() {
+        audioManager.adjustStreamVolume(
+            AudioManager.STREAM_MUSIC,
+            AudioManager.ADJUST_RAISE,
+            AudioManager.FLAG_SHOW_UI
+        )
+    }
+
+    /**
+     * 减小音量（遥控器音量-键）
+     */
+    fun volumeDown() {
+        audioManager.adjustStreamVolume(
+            AudioManager.STREAM_MUSIC,
+            AudioManager.ADJUST_LOWER,
+            AudioManager.FLAG_SHOW_UI
+        )
+    }
+
+    /**
+     * 静音/取消静音切换
+     */
+    fun toggleMute(): Boolean {
+        if (audioManager.isStreamMute(AudioManager.STREAM_MUSIC)) {
+            audioManager.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                AudioManager.ADJUST_UNMUTE,
+                AudioManager.FLAG_SHOW_UI
+            )
+            return false
+        } else {
+            audioManager.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                AudioManager.ADJUST_MUTE,
+                AudioManager.FLAG_SHOW_UI
+            )
+            return true
+        }
+    }
+
+    /** 获取当前音量 (0-100) */
+    fun getVolumePercent(): Int {
+        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        return if (max > 0) (current * 100 / max) else 0
     }
 
     private fun postDelayed(delayMs: Long, action: () -> Unit) {
