@@ -26,9 +26,12 @@ class TvPlayerManager(private val context: Context) {
         private set
 
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(90, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .build()
 
     private var currentUrl: String? = null
@@ -42,7 +45,8 @@ class TvPlayerManager(private val context: Context) {
     fun createPlayer(): ExoPlayer {
         val dataSourceFactory = DefaultDataSource.Factory(
             context,
-            OkHttpDataSource.Factory(okHttpClient).setUserAgent("TVLive/1.0")
+            OkHttpDataSource.Factory(okHttpClient)
+                .setUserAgent("Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
         )
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
@@ -104,10 +108,11 @@ class TvPlayerManager(private val context: Context) {
     private fun createMediaSource(url: String, mediaItem: MediaItem): MediaSource {
         val dataSourceFactory = DefaultDataSource.Factory(
             context,
-            OkHttpDataSource.Factory(okHttpClient).setUserAgent("TVLive/1.0")
+            OkHttpDataSource.Factory(okHttpClient)
+                .setUserAgent("Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
         )
 
-        return if (url.contains(".m3u8", ignoreCase = true)) {
+        return if (url.contains(".m3u8", ignoreCase = true) || url.contains("m3u8", ignoreCase = true)) {
             HlsMediaSource.Factory(dataSourceFactory)
                 .createMediaSource(mediaItem)
         } else {

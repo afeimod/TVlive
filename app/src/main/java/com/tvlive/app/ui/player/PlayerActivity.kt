@@ -147,10 +147,11 @@ class PlayerActivity : AppCompatActivity() {
             // 无频道数据, 需要刷新直播源
             runOnUiThread {
                 binding.loadingView.visibility = View.VISIBLE
+                binding.errorView.visibility = View.GONE
                 binding.tvLoadingText.text = getString(R.string.loading_sources)
             }
 
-            TvLiveApp.instance.repository.refreshAllSources { current, total, name ->
+            val result = TvLiveApp.instance.repository.refreshAllSources { current, total, name ->
                 runOnUiThread {
                     binding.tvLoadingText.text = getString(
                         R.string.status_loading, current, total, name
@@ -163,15 +164,22 @@ class PlayerActivity : AppCompatActivity() {
             // 标记源已加载
             getSharedPreferences("tvlive_prefs", MODE_PRIVATE)
                 .edit().putBoolean("sources_loaded", true).apply()
-        }
 
-        if (channelList.isEmpty()) {
-            runOnUiThread {
-                binding.loadingView.visibility = View.GONE
-                binding.errorView.visibility = View.VISIBLE
-                binding.tvErrorText.text = "无法加载频道，请检查网络后重试"
+            if (channelList.isEmpty()) {
+                // 显示详细错误信息
+                val errorMsg = if (result.errors.isNotEmpty()) {
+                    "加载失败: ${result.errors.joinToString("; ").take(200)}\n\n请检查网络后在设置中更换直播源"
+                } else {
+                    "无法加载频道，请检查网络后重试\n\n提示: 按确认键重试，按菜单键进入设置更换源"
+                }
+                runOnUiThread {
+                    binding.loadingView.visibility = View.GONE
+                    binding.errorView.visibility = View.VISIBLE
+                    binding.tvErrorText.text = errorMsg
+                    binding.btnRetry.requestFocus()
+                }
+                return
             }
-            return
         }
 
         channels = channelList
@@ -188,6 +196,7 @@ class PlayerActivity : AppCompatActivity() {
 
         runOnUiThread {
             binding.loadingView.visibility = View.GONE
+            binding.errorView.visibility = View.GONE
             overlayAdapter.submit(channels)
             playCurrent()
         }
@@ -224,7 +233,18 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun setupRetryButton() {
-        binding.btnRetry.setOnClickListener { playCurrent() }
+        binding.btnRetry.setOnClickListener {
+            if (channels.isEmpty()) {
+                // 频道为空时重新加载源
+                binding.errorView.visibility = View.GONE
+                lifecycleScope.launch { loadAndAutoPlay() }
+            } else {
+                playCurrent()
+            }
+        }
+        // 确保重试按钮可聚焦 (TV 遥控器)
+        binding.btnRetry.isFocusable = true
+        binding.btnRetry.isFocusableInTouchMode = true
     }
 
     // ==================== 设置面板 ====================
@@ -265,6 +285,8 @@ class PlayerActivity : AppCompatActivity() {
     private fun showSettingsPanel() {
         isSettingsPanelVisible = true
         binding.settingsPanel.visibility = View.VISIBLE
+        // 隐藏错误视图, 确保设置面板可交互
+        binding.errorView.visibility = View.GONE
         handler.removeCallbacks(settingsHideRunnable)
         // 更新收藏图标
         val channel = channels.getOrNull(currentIndex)
@@ -297,6 +319,12 @@ class PlayerActivity : AppCompatActivity() {
     private fun setupGestureDetector() {
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                // 错误界面下点击重试加载
+                if (binding.errorView.visibility == View.VISIBLE) {
+                    binding.errorView.visibility = View.GONE
+                    lifecycleScope.launch { loadAndAutoPlay() }
+                    return true
+                }
                 // 点击屏幕显示设置面板
                 if (!isSettingsPanelVisible && !isChannelListVisible) {
                     showSettingsPanel()
@@ -324,9 +352,10 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun refreshSourcesAndPlay() {
         binding.loadingView.visibility = View.VISIBLE
+        binding.errorView.visibility = View.GONE
         binding.tvLoadingText.text = getString(R.string.action_refresh)
         lifecycleScope.launch {
-            TvLiveApp.instance.repository.refreshAllSources()
+            val result = TvLiveApp.instance.repository.refreshAllSources()
             channels = TvLiveApp.instance.repository.allChannels.first()
             if (channels.isNotEmpty()) {
                 // 刷新后默认回到 CCTV-1
@@ -340,6 +369,15 @@ class PlayerActivity : AppCompatActivity() {
                 currentIndex = channels.indexOf(cctv1).coerceAtLeast(0)
                 overlayAdapter.submit(channels)
                 playCurrent()
+            } else {
+                val errorMsg = if (result.errors.isNotEmpty()) {
+                    "刷新失败: ${result.errors.joinToString("; ").take(200)}"
+                } else {
+                    "未加载到频道，请在直播源管理中更换源"
+                }
+                binding.tvErrorText.text = errorMsg
+                binding.errorView.visibility = View.VISIBLE
+                binding.btnRetry.requestFocus()
             }
             binding.loadingView.visibility = View.GONE
         }
@@ -488,6 +526,20 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
+            // 错误界面下: 确认键重试, 菜单键/返回键打开设置面板
+            if (binding.errorView.visibility == View.VISIBLE) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        binding.errorView.visibility = View.GONE
+                        lifecycleScope.launch { loadAndAutoPlay() }
+                        return true
+                    }
+                    KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_BACK -> {
+                        showSettingsPanel()
+                        return true
+                    }
+                }
+            }
             when (event.keyCode) {
                 // 上下键: 切换频道 (面板和列表隐藏时)
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> {
@@ -511,10 +563,6 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 // 确认键: 显示/隐藏设置面板
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                    if (binding.errorView.visibility == View.VISIBLE) {
-                        playCurrent()
-                        return true
-                    }
                     if (isChannelListVisible) {
                         // 由 RecyclerView 焦点处理选中
                     } else if (isSettingsPanelVisible) {

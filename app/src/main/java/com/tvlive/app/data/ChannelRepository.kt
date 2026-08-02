@@ -27,8 +27,12 @@ class ChannelRepository(private val context: Context) {
     private val historyDao = db.historyDao()
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(90, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .build()
 
     val allChannels: Flow<List<Channel>> = channelDao.getAllChannels()
@@ -66,7 +70,10 @@ class ChannelRepository(private val context: Context) {
         sourceDao.setDefault(id)
     }
 
-    suspend fun getEnabledSources(): List<Source> = sourceDao.getEnabledSources()
+    suspend fun getEnabledSources(): List<Source> {
+        initDefaultSources()
+        return sourceDao.getEnabledSources()
+    }
 
     // ==================== 频道加载 ====================
 
@@ -74,6 +81,9 @@ class ChannelRepository(private val context: Context) {
      * 从网络加载所有启用的源并解析频道
      */
     suspend fun refreshAllSources(onProgress: ((current: Int, total: Int, sourceName: String) -> Unit)? = null): RefreshResult {
+        // 确保默认源已初始化 (防止竞态条件)
+        initDefaultSources()
+
         val sources = getEnabledSources()
         var totalChannels = 0
         var successCount = 0
@@ -141,7 +151,12 @@ class ChannelRepository(private val context: Context) {
     }
 
     private suspend fun fetchUrl(url: String): String = withContext(Dispatchers.IO) {
-        val request = Request.Builder().url(url).build()
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+            .header("Accept", "*/*")
+            .header("Accept-Encoding", "gzip, deflate")
+            .build()
         httpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 throw RuntimeException("HTTP ${response.code}")
