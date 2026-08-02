@@ -43,43 +43,54 @@ class ChannelRepository(private val context: Context) {
     // ==================== 源管理 ====================
 
     /**
-     * 初始化默认源 (本地源 + 在线国内直连源)
-     * 每次启动检查, 补充缺失的源 (兼容旧版本升级)
+     * 初始化默认源
+     * 本地离线源为默认主源 (不需要网络即可加载)
+     * 在线国内直连源为备用 (网络可用时获取更多频道)
      */
     suspend fun initDefaultSources() {
-        // 1. 确保在线国内直连源存在 (zbds.top, 不经过GitHub)
+        // 1. 本地离线源 (默认主源, 不需要网络)
+        if (sourceDao.getByName(ASSET_SOURCE_NAME) == null) {
+            val localSource = Source(
+                name = ASSET_SOURCE_NAME,
+                url = "assets://$ASSET_FILE",
+                isDefault = true,
+                enabled = true
+            )
+            sourceDao.insert(localSource)
+            Log.d("ChannelRepository", "Inserted local source (default): $ASSET_SOURCE_NAME")
+        }
+
+        // 2. 在线国内直连源 (备用, zbds.top 不经过GitHub)
         if (sourceDao.getByName(DefaultSources.ONLINE_SOURCE_NAME) == null &&
             sourceDao.getByUrl(DefaultSources.ONLINE_SOURCE_URL) == null) {
             val onlineSource = Source(
                 name = DefaultSources.ONLINE_SOURCE_NAME,
                 url = DefaultSources.ONLINE_SOURCE_URL,
-                isDefault = sourceDao.count() == 0,  // 首次安装设为默认
+                isDefault = false,
                 enabled = true
             )
             sourceDao.insert(onlineSource)
             Log.d("ChannelRepository", "Inserted online source: ${DefaultSources.ONLINE_SOURCE_NAME}")
         }
 
-        // 2. 确保本地离线源存在 (备用)
-        if (sourceDao.getByName(ASSET_SOURCE_NAME) == null) {
-            val localSource = Source(
-                name = ASSET_SOURCE_NAME,
-                url = "assets://$ASSET_FILE",
-                isDefault = false,
-                enabled = true
-            )
-            sourceDao.insert(localSource)
-            Log.d("ChannelRepository", "Inserted local source: $ASSET_SOURCE_NAME")
+        // 3. 清除可能残留的旧版GitHub源 (URL包含githubusercontent)
+        val allSources = sourceDao.getAllSourcesStatic()
+        allSources.forEach { source ->
+            if (source.url.contains("githubusercontent.com") ||
+                source.url.contains("raw.githubusercontent.com") ||
+                source.url.contains("gh-proxy.com") ||
+                source.url.contains("ghfast.top")) {
+                Log.d("ChannelRepository", "Removing old GitHub source: ${source.name}")
+                channelDao.deleteBySource(source.id)
+                sourceDao.delete(source)
+            }
         }
 
-        // 3. 如果没有任何源设为默认, 将在线源设为默认
-        if (sourceDao.count() > 0) {
-            val enabled = sourceDao.getEnabledSources()
-            if (enabled.none { it.isDefault } && enabled.isNotEmpty()) {
-                val firstEnabled = enabled.first()
-                sourceDao.clearDefault()
-                sourceDao.setDefault(firstEnabled.id)
-            }
+        // 4. 确保至少有一个默认源
+        val enabled = sourceDao.getEnabledSources()
+        if (enabled.none { it.isDefault } && enabled.isNotEmpty()) {
+            sourceDao.clearDefault()
+            sourceDao.setDefault(enabled.first().id)
         }
     }
 
@@ -114,7 +125,10 @@ class ChannelRepository(private val context: Context) {
     suspend fun refreshAllSources(onProgress: ((current: Int, total: Int, sourceName: String) -> Unit)? = null): RefreshResult {
         initDefaultSources()
 
-        val sources = getEnabledSources()
+        val sources = getEnabledSources().sortedBy { source ->
+            // 本地源优先 (assets:// 排在前面), 在线源排后面
+            if (source.url.startsWith("assets://")) 0 else 1
+        }
         var totalChannels = 0
         var successCount = 0
         var failCount = 0

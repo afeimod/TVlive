@@ -44,6 +44,9 @@ interface SourceDao {
     @Query("SELECT * FROM sources ORDER BY isDefault DESC, name")
     fun getAllSources(): Flow<List<Source>>
 
+    @Query("SELECT * FROM sources ORDER BY isDefault DESC, name")
+    suspend fun getAllSourcesStatic(): List<Source>
+
     @Query("SELECT * FROM sources WHERE enabled = 1 ORDER BY isDefault DESC, name")
     suspend fun getEnabledSources(): List<Source>
 
