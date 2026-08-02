@@ -77,8 +77,6 @@ dependencies {
     implementation("androidx.media3:media3-session:1.2.1")
     implementation("androidx.media3:media3-datasource:1.2.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.2.1")
-    implementation("androidx.media3:media3-exoplayer-dash:1.2.1")  // DASH support
-    implementation("androidx.media3:media3-exoplayer-rtsp:1.2.1")  // RTSP support
 
     // Networking
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

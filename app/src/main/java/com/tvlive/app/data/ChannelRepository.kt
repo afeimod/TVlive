@@ -17,8 +17,6 @@ import okhttp3.Request
 
 /**
  * 频道数据仓库 - 负责数据获取、解析、缓存
- *
- * 优先从 assets 本地源加载, 不依赖在线刷新
  */
 class ChannelRepository(private val context: Context) {
 
@@ -27,6 +25,7 @@ class ChannelRepository(private val context: Context) {
     private val sourceDao = db.sourceDao()
     private val historyDao = db.historyDao()
 
+    // 使用优化的OkHttpClient: 自定义DNS + TLS兼容 + 连接池 + 缓存
     private val httpClient = NetworkConfig.createClient(context).build()
 
     val allChannels: Flow<List<Channel>> = channelDao.getAllChannels()
@@ -35,25 +34,15 @@ class ChannelRepository(private val context: Context) {
     val groups: Flow<List<String>> = channelDao.getGroups()
     val history: Flow<List<PlayHistory>> = historyDao.getAll()
 
-    companion object {
-        private const val ASSET_SOURCE_NAME = DefaultSources.LOCAL_SOURCE_NAME
-        private const val ASSET_FILE = "china_channels.m3u"
-    }
-
     // ==================== 源管理 ====================
 
-    /** 初始化默认源 (仅内置本地源) */
+    /** 初始化默认源 */
     suspend fun initDefaultSources() {
         if (sourceDao.count() == 0) {
-            // 插入内置本地源
-            val localSource = Source(
-                name = ASSET_SOURCE_NAME,
-                url = "assets://$ASSET_FILE",  // 特殊协议标记本地源
-                isDefault = true,
-                enabled = true
-            )
-            sourceDao.insert(localSource)
-            Log.d("ChannelRepository", "Inserted local source: $ASSET_SOURCE_NAME")
+            DefaultSources.sources.forEach { source ->
+                val id = sourceDao.insert(source)
+                Log.d("ChannelRepository", "Inserted source: ${source.name} id=$id")
+            }
         }
     }
 
@@ -82,10 +71,10 @@ class ChannelRepository(private val context: Context) {
     // ==================== 频道加载 ====================
 
     /**
-     * 刷新所有启用的源
-     * 本地源 (assets://) 直接读取, 在线源走网络
+     * 从网络加载所有启用的源并解析频道
      */
     suspend fun refreshAllSources(onProgress: ((current: Int, total: Int, sourceName: String) -> Unit)? = null): RefreshResult {
+        // 确保默认源已初始化 (防止竞态条件)
         initDefaultSources()
 
         val sources = getEnabledSources()
@@ -99,17 +88,11 @@ class ChannelRepository(private val context: Context) {
         sources.forEachIndexed { index, source ->
             onProgress?.invoke(index + 1, sources.size, source.name)
             try {
-                val content = if (source.url.startsWith("assets://")) {
-                    // 本地 assets 源
-                    loadFromAssets(source.url.removePrefix("assets://"))
-                } else {
-                    // 在线源
-                    fetchUrl(source.url)
-                }
-
+                val content = fetchUrl(source.url)
                 val channels = M3UParser.parse(content, source)
 
                 if (channels.isNotEmpty()) {
+                    // 分配频道号
                     val channelsWithNumber = channels.mapIndexed { i, ch ->
                         ch.copy(channelNumber = i + 1)
                     }
@@ -117,6 +100,7 @@ class ChannelRepository(private val context: Context) {
                     totalChannels += channels.size
                     successCount++
 
+                    // 更新源信息
                     sourceDao.update(source.copy(
                         lastUpdate = System.currentTimeMillis(),
                         channelCount = channels.size
@@ -137,22 +121,11 @@ class ChannelRepository(private val context: Context) {
     }
 
     /**
-     * 从 assets 读取本地源文件
-     */
-    private fun loadFromAssets(fileName: String): String {
-        return context.assets.open(fileName).bufferedReader().use { it.readText() }
-    }
-
-    /**
      * 仅加载指定源
      */
     suspend fun refreshSource(source: Source): List<Channel> = withContext(Dispatchers.IO) {
         try {
-            val content = if (source.url.startsWith("assets://")) {
-                loadFromAssets(source.url.removePrefix("assets://"))
-            } else {
-                fetchUrl(source.url)
-            }
+            val content = fetchUrl(source.url)
             val channels = M3UParser.parse(content, source)
             channelDao.deleteBySource(source.id)
             val channelsWithNumber = channels.mapIndexed { i, ch ->
@@ -199,6 +172,9 @@ class ChannelRepository(private val context: Context) {
         channelDao.setFavorite(channel.id, fav)
     }
 
+    /**
+     * 获取按分组的所有频道
+     */
     fun getGroupedChannels(): Flow<List<ChannelGroup>> = flow {
         val allChannelsList = channelDao.getAllChannels()
         allChannelsList.collect { channels ->

@@ -2,8 +2,6 @@ package com.tvlive.app.player
 
 import android.content.Context
 import android.net.Uri
-import androidx.media3.common.AudioAttributes
-import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -22,7 +20,7 @@ import okhttp3.OkHttpClient
  * 支持 HLS(m3u8)、HTTP/HTTPS 直播流
  * 自动重连、错误处理
  *
- * 音频修复: 音频焦点 + 媒体类型音频属性 + 自动重连
+ * 网络优化: 自定义DNS + TLS兼容 + IPv4优先 + 连接池
  */
 class TvPlayerManager(private val context: Context) {
 
@@ -34,7 +32,7 @@ class TvPlayerManager(private val context: Context) {
 
     private var currentUrl: String? = null
     private var retryCount = 0
-    private val maxRetry = 5
+    private val maxRetry = 5  // 增加重试次数, 电视网络不稳定
 
     var onError: ((String) -> Unit)? = null
     var onLoading: (() -> Unit)? = null
@@ -48,17 +46,8 @@ class TvPlayerManager(private val context: Context) {
         )
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
-        // 音频属性: 媒体类型, 让系统正确路由音频到电视扬声器/音响
-        val audioAttributes = AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-            .build()
-
         return ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
-            .setAudioAttributes(audioAttributes, true)  // true = 请求音频焦点
-            .setHandleAudioBecomingNoisy(true)  // 拔耳机时暂停
-            .setWakeMode(C.WAKE_MODE_NETWORK)  // 保持CPU和网络唤醒
             .build().apply {
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
@@ -76,18 +65,19 @@ class TvPlayerManager(private val context: Context) {
                     override fun onPlayerError(error: PlaybackException) {
                         if (retryCount < maxRetry) {
                             retryCount++
+                            // 自动重连, 间隔递增: 1s, 2s, 3s, 4s, 5s
                             val delay = (retryCount * 1000).toLong()
                             postDelayed(delay) {
                                 currentUrl?.let { play(it) }
                             }
                         } else {
+                            // 清除DNS缓存, 下次重新解析
                             NetworkConfig.clearDnsCache()
                             onError?.invoke("播放失败: ${error.errorCodeName}. 请尝试切换其他源或频道")
                         }
                     }
                 })
                 playWhenReady = true
-                volume = 1.0f  // 确保音量不为0
             }
     }
 
@@ -121,15 +111,14 @@ class TvPlayerManager(private val context: Context) {
                 .setUserAgent(NetworkConfig.USER_AGENT)
         )
 
-        // 判断是否为HLS流
+        // 判断是否为HLS流: m3u8后缀, 或URL中包含m3u8
         val isHls = url.contains(".m3u8", ignoreCase = true) ||
                     url.contains("m3u8", ignoreCase = true) ||
-                    url.contains("/hls/", ignoreCase = true) ||
-                    url.contains("/tsfile/", ignoreCase = true)
+                    url.contains("/hls/", ignoreCase = true)
 
         return if (isHls) {
             HlsMediaSource.Factory(dataSourceFactory)
-                .setAllowChunklessPreparation(true)
+                .setAllowChunklessPreparation(true)  // 无分块预准备, 加速启动
                 .createMediaSource(mediaItem)
         } else {
             DefaultMediaSourceFactory(dataSourceFactory)
