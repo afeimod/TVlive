@@ -398,7 +398,9 @@ class MainActivity : AppCompatActivity() {
         updateChannelInfo(channel)
         overlayAdapter.setCurrentIndex(currentIndex)
 
+        // 隐藏刷新加载遮罩，显示播放器加载状态
         binding.loadingView.visibility = View.VISIBLE
+        binding.tvLoadingText.text = getString(R.string.player_loading)
         binding.errorView.visibility = View.GONE
 
         playerManager.play(channel.url)
