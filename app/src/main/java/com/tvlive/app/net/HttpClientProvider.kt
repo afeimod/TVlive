@@ -22,12 +22,8 @@ object HttpClientProvider {
     /** DNS 解析器单例（带缓存） */
     private val safeDns = SafeDns()
 
-    /** 连接池 */
-    private val connectionPool = ConnectionPool(
-        maxIdleConnections = 5,
-        keepAliveDuration = 5,
-        keepAliveDurationUnit = TimeUnit.MINUTES
-    )
+    /** 连接池（默认: 5个空闲连接, 5分钟存活时间） */
+    private val connectionPool = ConnectionPool()
 
     /**
      * 用于数据请求的 OkHttpClient（加载直播源、EPG 等）
