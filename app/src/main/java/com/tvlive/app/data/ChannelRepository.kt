@@ -42,14 +42,24 @@ class ChannelRepository(private val context: Context) {
 
     // ==================== 源管理 ====================
 
-    /** 初始化默认源 (仅内置本地源) */
+    /** 初始化默认源 (本地源 + 在线代理源) */
     suspend fun initDefaultSources() {
         if (sourceDao.count() == 0) {
-            // 插入内置本地源
+            // 1. 在线代理源 (优先, 频道更多更全)
+            val onlineSource = Source(
+                name = DefaultSources.ONLINE_SOURCE_NAME,
+                url = DefaultSources.ONLINE_SOURCE_URL_1,
+                isDefault = true,
+                enabled = true
+            )
+            sourceDao.insert(onlineSource)
+            Log.d("ChannelRepository", "Inserted online proxy source: ${DefaultSources.ONLINE_SOURCE_NAME}")
+
+            // 2. 本地离线源 (备用)
             val localSource = Source(
                 name = ASSET_SOURCE_NAME,
-                url = "assets://$ASSET_FILE",  // 特殊协议标记本地源
-                isDefault = true,
+                url = "assets://$ASSET_FILE",
+                isDefault = false,
                 enabled = true
             )
             sourceDao.insert(localSource)
@@ -103,8 +113,8 @@ class ChannelRepository(private val context: Context) {
                     // 本地 assets 源
                     loadFromAssets(source.url.removePrefix("assets://"))
                 } else {
-                    // 在线源
-                    fetchUrl(source.url)
+                    // 在线源 (带代理回退)
+                    fetchUrlWithFallback(source.url)
                 }
 
                 val channels = M3UParser.parse(content, source)
@@ -151,7 +161,7 @@ class ChannelRepository(private val context: Context) {
             val content = if (source.url.startsWith("assets://")) {
                 loadFromAssets(source.url.removePrefix("assets://"))
             } else {
-                fetchUrl(source.url)
+                fetchUrlWithFallback(source.url)
             }
             val channels = M3UParser.parse(content, source)
             channelDao.deleteBySource(source.id)
@@ -182,6 +192,31 @@ class ChannelRepository(private val context: Context) {
                 throw RuntimeException("HTTP ${response.code}")
             }
             response.body?.string() ?: throw RuntimeException("空响应")
+        }
+    }
+
+    /**
+     * 带代理回退的URL获取
+     * 如果主代理失败, 自动尝试备用代理地址
+     */
+    private suspend fun fetchUrlWithFallback(primaryUrl: String): String = withContext(Dispatchers.IO) {
+        try {
+            fetchUrl(primaryUrl)
+        } catch (e: Exception) {
+            Log.w("ChannelRepository", "主代理失败, 尝试备用代理: ${e.message}")
+            // 如果是 gh-proxy.com 的URL, 尝试 ghfast.top
+            val backupUrl = when {
+                primaryUrl.contains("gh-proxy.com") ->
+                    primaryUrl.replace("gh-proxy.com", "ghfast.top")
+                primaryUrl.contains("ghfast.top") ->
+                    primaryUrl.replace("ghfast.top", "gh-proxy.com")
+                else -> null
+            }
+            if (backupUrl != null) {
+                fetchUrl(backupUrl)
+            } else {
+                throw e
+            }
         }
     }
 
