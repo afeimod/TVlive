@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/ChannelCard"
+    android:layout_width="160dp"
+    android:layout_height="90dp">
+
+    <!-- 频道 logo 区域 -->
+    <ImageView
+        android:id="@+id/ivLogo"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center"
+        android:src="@drawable/ic_tv_logo"
+        android:scaleType="fitCenter"
+        android:contentDescription="@null" />
+
+    <!-- 文字 logo 占位 (无图片时显示首字) -->
+    <TextView
+        android:id="@+id/tvLogoText"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center"
+        android:gravity="center"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:textColor="@color/text_primary"
+        android:visibility="gone" />
+
+    <!-- 底部信息区 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:background="#AA000000"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/tvChannelName"
+            style="@style/ChannelName"
+            android:layout_width="match_parent"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="2dp">
+
+            <TextView
+                android:id="@+id/tvGroup"
+                style="@style/GroupTag"
+                android:textSize="10sp" />
+
+            <TextView
+                android:id="@+id/tvNumber"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 右上角收藏星标 -->
+    <ImageView
+        android:id="@+id/ivFavorite"
+        android:layout_width="16dp"
+        android:layout_height="16dp"
+        android:layout_gravity="end|top"
+        android:layout_margin="6dp"
+        android:src="@drawable/ic_star"
+        android:tint="@color/favorite_on"
+        android:visibility="gone"
+        android:contentDescription="@string/action_favorite" />
+</FrameLayout>
