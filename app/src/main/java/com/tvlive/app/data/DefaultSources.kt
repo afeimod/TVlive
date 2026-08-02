@@ -6,6 +6,11 @@ import com.tvlive.app.data.model.Source
  * 默认内置直播源 - 均为公开免费源
  *
  * 默认只启用中国频道源，其余源预置但默认禁用，用户可在源管理中手动开启
+ *
+ * 网络兼容性说明：
+ * - 所有源已通过 SafeDns 自定义 DNS 解析绕过运营商 DNS 污染
+ * - raw.githubusercontent.com 源在原始 URL 失败时会自动尝试国内镜像（gitmirror/ghp.ci/ghproxy）
+ * - github.io 源通过 SafeDns 解析后通常可直接访问（Fastly CDN 在移动网络下可达）
  */
 object DefaultSources {
 

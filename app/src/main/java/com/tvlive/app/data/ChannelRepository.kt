@@ -7,14 +7,14 @@ import com.tvlive.app.data.model.Channel
 import com.tvlive.app.data.model.ChannelGroup
 import com.tvlive.app.data.model.PlayHistory
 import com.tvlive.app.data.model.Source
+import com.tvlive.app.net.HttpClientProvider
+import com.tvlive.app.net.UrlHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.util.concurrent.TimeUnit
 
 /**
  * 频道数据仓库 - 负责数据获取、解析、缓存
@@ -26,10 +26,7 @@ class ChannelRepository(private val context: Context) {
     private val sourceDao = db.sourceDao()
     private val historyDao = db.historyDao()
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val httpClient = HttpClientProvider.dataClient
 
     val allChannels: Flow<List<Channel>> = channelDao.getAllChannels()
     val favorites: Flow<List<Channel>> = channelDao.getFavorites()
@@ -141,13 +138,36 @@ class ChannelRepository(private val context: Context) {
     }
 
     private suspend fun fetchUrl(url: String): String = withContext(Dispatchers.IO) {
-        val request = Request.Builder().url(url).build()
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw RuntimeException("HTTP ${response.code}")
+        // 获取原始 URL + 镜像备选 URL 列表
+        val alternativeUrls = UrlHelper.getAlternativeUrls(url)
+        var lastError: Exception? = null
+
+        for (attemptUrl in alternativeUrls) {
+            try {
+                Log.d("ChannelRepository", "Fetching: $attemptUrl")
+                val request = Request.Builder()
+                    .url(attemptUrl)
+                    .header("User-Agent", HttpClientProvider.USER_AGENT)
+                    .build()
+
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw RuntimeException("HTTP ${response.code}")
+                    }
+                    val body = response.body?.string()
+                    if (body.isNullOrBlank()) {
+                        throw RuntimeException("空响应")
+                    }
+                    return@withContext body
+                }
+            } catch (e: Exception) {
+                lastError = e
+                Log.w("ChannelRepository", "Fetch failed for $attemptUrl: ${e.message}")
+                // 继续尝试下一个备选 URL
             }
-            response.body?.string() ?: throw RuntimeException("空响应")
         }
+
+        throw lastError ?: RuntimeException("所有 URL 均无法访问: $url")
     }
 
     // ==================== 频道操作 ====================

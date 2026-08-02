@@ -11,8 +11,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
-import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
+import com.tvlive.app.net.HttpClientProvider
 
 /**
  * 基于 Media3 ExoPlayer 的电视直播播放器管理
@@ -25,11 +24,7 @@ class TvPlayerManager(private val context: Context) {
     var player: ExoPlayer? = null
         private set
 
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
+    private val okHttpClient = HttpClientProvider.playerClient
 
     private var currentUrl: String? = null
     private var retryCount = 0
@@ -42,7 +37,7 @@ class TvPlayerManager(private val context: Context) {
     fun createPlayer(): ExoPlayer {
         val dataSourceFactory = DefaultDataSource.Factory(
             context,
-            OkHttpDataSource.Factory(okHttpClient).setUserAgent("TVLive/1.0")
+            OkHttpDataSource.Factory(okHttpClient).setUserAgent(HttpClientProvider.USER_AGENT)
         )
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
@@ -104,7 +99,7 @@ class TvPlayerManager(private val context: Context) {
     private fun createMediaSource(url: String, mediaItem: MediaItem): MediaSource {
         val dataSourceFactory = DefaultDataSource.Factory(
             context,
-            OkHttpDataSource.Factory(okHttpClient).setUserAgent("TVLive/1.0")
+            OkHttpDataSource.Factory(okHttpClient).setUserAgent(HttpClientProvider.USER_AGENT)
         )
 
         return if (url.contains(".m3u8", ignoreCase = true)) {
