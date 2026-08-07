@@ -177,20 +177,28 @@ object UrlHelper {
         }
 
         // ==================== github.io 镜像 ====================
+        // iptv-org.github.io/iptv/countries/cn.m3u 对应仓库 iptv-org/iptv
+        // jsdelivr 国内 CDN 镜像通常比 gh-proxy 代理更快、更稳定，优先使用
         if (originalUrl.contains("github.io")) {
-            // iptv-org.github.io/iptv/countries/cn.m3u
-            // 对应 jsdelivr: gcore.jsdelivr.net/gh/iptv-org/iptv@master/streams/cn.m3u
-            urls.add("https://gh-proxy.com/$originalUrl")
-            urls.add("https://ghproxy.net/$originalUrl")
-
-            // 尝试 jsdelivr（部分 github.io 有对应仓库）
+            // 优先尝试 jsdelivr 镜像（部分 github.io 有对应仓库）
             if (originalUrl.contains("iptv-org.github.io/iptv/")) {
                 val subPath = originalUrl.substringAfter("iptv-org.github.io/iptv/")
                 // iptv-org/iptv 仓库的 streams 目录有对应文件
+                // 注意：cn.m3u 实际路径是 streams/cn.m3u，但 countries/cn.m3u 是 GitHub Pages 的路由
+                // 这里两种路径都加入，让并行请求取最快者
                 urls.add("https://gcore.jsdelivr.net/gh/iptv-org/iptv@master/streams/$subPath")
                 urls.add("https://testingcf.jsdelivr.net/gh/iptv-org/iptv@master/streams/$subPath")
                 urls.add("https://jsd.cdn.zzko.cn/gh/iptv-org/iptv@master/streams/$subPath")
+                urls.add("https://fastly.jsdelivr.net/gh/iptv-org/iptv@master/streams/$subPath")
+                // countries/cn.m3u 路径（部分镜像可能直接支持）
+                urls.add("https://gcore.jsdelivr.net/gh/iptv-org/iptv@master/$subPath")
+                urls.add("https://testingcf.jsdelivr.net/gh/iptv-org/iptv@master/$subPath")
             }
+
+            // GitHub 代理前缀（作为 jsdelivr 失败时的备选）
+            urls.add("https://gh-proxy.com/$originalUrl")
+            urls.add("https://ghproxy.net/$originalUrl")
+            urls.add("https://ghproxy.cc/$originalUrl")
         }
 
         // ==================== 原始 URL 放最后（兜底） ====================

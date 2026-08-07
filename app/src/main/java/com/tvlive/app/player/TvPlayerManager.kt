@@ -81,10 +81,28 @@ class TvPlayerManager(private val context: Context) {
         )
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
+        // 5G 网络优化：使用 LoadControl 加快直播起播速度
+        // - minBufferMs 较小：快速开始播放（500ms 缓冲即可起播）
+        // - maxBufferMs 适中：避免缓冲过多数据占用内存
+        // - bufferForPlaybackMs 较小：起播门槛低，5G 网络下可快速起播
+        // - backBufferMs 较小：直播不需要回看，减少内存占用
+        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs= */ 500,
+                /* maxBufferMs= */ 15000,
+                /* bufferForPlaybackMs= */ 200,
+                /* bufferForPlaybackAfterRebufferMs= */ 500
+            )
+            .setBackBuffer(/* backBufferDurationMs= */ 1000, /* retainBackBufferFromKeyframe= */ false)
+            .setTargetBufferBytes(androidx.media3.exoplayer.DefaultLoadControl.DEFAULT_TARGET_BUFFER_BYTES)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
         return ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(mediaAudioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
+            .setLoadControl(loadControl)
             .build().apply {
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
@@ -210,10 +228,15 @@ class TvPlayerManager(private val context: Context) {
         )
 
         return if (url.contains(".m3u8", ignoreCase = true)) {
+            // 5G 网络优化：HLS 直播使用较短的 playlist 重载间隔和更快的错误检测
+            // - minLoadableRetryCount：5G 网络下重试 3 拿足够，避免长时间卡在失败 URL
+            // - playlist loader 通过 OkHttp 的超时控制
             HlsMediaSource.Factory(dataSourceFactory)
+                .setMinLoadableRetryCount(3)
                 .createMediaSource(mediaItem)
         } else {
             DefaultMediaSourceFactory(dataSourceFactory)
+                .setMinLoadableRetryCount(3)
                 .createMediaSource(mediaItem)
         }
     }

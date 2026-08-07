@@ -57,14 +57,14 @@ class SafeDns : Dns {
             DohServer("doh.pub", "/dns-query", listOf("119.29.29.29", "119.28.28.28"))
         )
 
-        /** DNS 查询超时（毫秒） */
-        private const val DNS_TIMEOUT_MS = 3000
+        /** DNS 查询超时（毫秒）- 5G 网络下缩短，并行查询下足够 */
+        private const val DNS_TIMEOUT_MS = 2000
 
-        /** DoH 查询超时（毫秒） */
-        private const val DOH_TIMEOUT_MS = 5000
+        /** DoH 查询超时（毫秒）- 5G 网络下缩短 */
+        private const val DOH_TIMEOUT_MS = 3000
 
-        /** DNS 缓存有效期（秒） */
-        private const val CACHE_TTL_SECONDS = 300L
+        /** DNS 缓存有效期（秒）- 缩短到 2 分钟，更频繁刷新以适应移动网络 IP 变化 */
+        private const val CACHE_TTL_SECONDS = 120L
 
         /**
          * 已知被中国移动 DNS 污染的域名后缀
@@ -83,13 +83,21 @@ class SafeDns : Dns {
         /**
          * 国内域名后缀 - 对于这些域名，系统 DNS 通常可靠
          * 且不过滤私有 IP（运营商 CDN 可能使用内网地址）
+         *
+         * 包含所有内置镜像源使用的国内域名，确保 DNS 解析优先使用系统 DNS（最快）
          */
         private val DOMESTIC_DOMAIN_SUFFIXES = setOf(
-            ".cn", ".com.cn", ".top", ".net", ".org",
-            "alidns.com", "doh.pub", "zbds.top", "fanmingming.com",
-            "tuna.tsinghua.edu.cn", "gitmirror.com", "zzko.cn",
-            "kkgithub.com", "ghproxy.net", "gh-proxy.com",
-            "staticdn.net"
+            ".cn", ".com.cn", ".top", ".net", ".org", ".edu.cn",
+            "alidns.com", "doh.pub",
+            "zbds.top", "fanmingming.com", "kuaikan123.cyou",
+            "tuna.tsinghua.edu.cn",
+            "gitmirror.com", "zzko.cn",
+            "kkgithub.com", "kgithub.com",
+            "ghproxy.net", "gh-proxy.com", "ghproxy.cc",
+            "staticdn.net",
+            "jsdelivr.net",  // gcore/testingcf/fastly 等 jsdelivr 镜像
+            "gcore.com", "gcorecdn.com",
+            "cloudflare.com"
         )
     }
 
@@ -114,13 +122,10 @@ class SafeDns : Dns {
         val isPolluted = isPollutedDomain(hostname)
         val isDomestic = isDomesticDomain(hostname)
 
-        // 2. 对于已知污染域名，跳过系统 DNS
-        //    对于普通域名（含国内域名），先尝试系统 DNS（快速）
+        // 2. 对于非污染域名，先尝试系统 DNS（5G 网络下系统 DNS 通常可靠且最快）
         if (!isPolluted) {
             try {
                 val systemResult = Dns.SYSTEM.lookup(hostname)
-                // 对于国内域名，接受所有 IP（包括私有 IP，运营商 CDN 可能使用）
-                // 对于国外域名，过滤明显的错误 IP
                 val valid = if (isDomestic) {
                     systemResult.filter { it.hostAddress != null && it.hostAddress != "0.0.0.0" }
                 } else {
@@ -135,37 +140,16 @@ class SafeDns : Dns {
             }
         }
 
-        // 3. 通过 UDP 直连公共 DNS 服务器
-        for (dnsServer in PUBLIC_DNS_SERVERS) {
-            try {
-                val addresses = resolveViaUdp(hostname, dnsServer)
-                if (addresses.isNotEmpty()) {
-                    Log.d(TAG, "Resolved $hostname via UDP $dnsServer -> ${addresses.map { it.hostAddress }}")
-                    cacheResult(hostname, addresses)
-                    return addresses
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "UDP DNS $dnsServer failed for $hostname: ${e.message}")
-            }
+        // 3. 并行查询所有公共 DNS（UDP）+ DoH，取第一个成功结果
+        //    5G 网络优化：不再顺序逐个尝试，而是同时发起所有查询
+        //    最快的 DNS 服务器决定整体响应时间（通常 50-200ms）
+        val parallelResult = resolveViaParallelDns(hostname, isDomestic)
+        if (parallelResult.isNotEmpty()) {
+            cacheResult(hostname, parallelResult)
+            return parallelResult
         }
 
-        // 4. UDP DNS 全部失败，使用 DoH (DNS over HTTPS) 兜底
-        //    某些移动网络会封锁 UDP 53 端口，DoH 使用 443 端口可绕过
-        //    使用预置 IP 连接 DoH 服务器，避免 DNS 鸡蛋问题
-        for (dohServer in DOH_SERVERS) {
-            try {
-                val addresses = resolveViaDoH(hostname, dohServer)
-                if (addresses.isNotEmpty()) {
-                    Log.d(TAG, "Resolved $hostname via DoH ${dohServer.domain} -> ${addresses.map { it.hostAddress }}")
-                    cacheResult(hostname, addresses)
-                    return addresses
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "DoH ${dohServer.domain} failed for $hostname: ${e.message}")
-            }
-        }
-
-        // 5. 所有方法都失败，最后尝试系统 DNS（作为兜底）
+        // 4. 所有方法都失败，最后尝试系统 DNS（作为兜底）
         if (isPolluted) {
             try {
                 val systemResult = Dns.SYSTEM.lookup(hostname)
@@ -185,6 +169,69 @@ class SafeDns : Dns {
         }
 
         throw UnknownHostException("Failed to resolve $hostname via all DNS methods")
+    }
+
+    /**
+     * 并行查询所有公共 DNS 服务器（UDP + DoH），返回第一个成功结果
+     *
+     * 5G 网络优化：同时向所有 DNS 服务器发起查询，最快的返回决定整体延迟。
+     * 这避免了顺序查询时单个慢 DNS 服务器拖慢整体解析的问题。
+     *
+     * 实现使用线程池并行查询 + CountDownLatch 等待第一个成功结果。
+     */
+    private fun resolveViaParallelDns(hostname: String, isDomestic: Boolean): List<InetAddress> {
+        val executor = java.util.concurrent.Executors.newCachedThreadPool()
+        val result = java.util.concurrent.CompletableFuture<List<InetAddress>>()
+        val latch = java.util.concurrent.CountDownLatch(1)
+
+        // 收集所有查询任务
+        val tasks = mutableListOf<Runnable>()
+
+        // UDP 查询任务
+        for (dnsServer in PUBLIC_DNS_SERVERS) {
+            tasks.add(Runnable {
+                try {
+                    val addresses = resolveViaUdp(hostname, dnsServer)
+                    if (addresses.isNotEmpty()) {
+                        Log.d(TAG, "Resolved $hostname via UDP $dnsServer -> ${addresses.map { it.hostAddress }}")
+                        result.complete(addresses)
+                        latch.countDown()
+                    }
+                } catch (e: Exception) {
+                    // 静默失败，让其他查询继续
+                }
+            })
+        }
+
+        // DoH 查询任务
+        for (dohServer in DOH_SERVERS) {
+            tasks.add(Runnable {
+                try {
+                    val addresses = resolveViaDoH(hostname, dohServer)
+                    if (addresses.isNotEmpty()) {
+                        Log.d(TAG, "Resolved $hostname via DoH ${dohServer.domain} -> ${addresses.map { it.hostAddress }}")
+                        result.complete(addresses)
+                        latch.countDown()
+                    }
+                } catch (e: Exception) {
+                    // 静默失败
+                }
+            })
+        }
+
+        // 提交所有任务
+        tasks.forEach { executor.submit(it) }
+
+        try {
+            // 等待第一个成功结果（最长等待 DNS_TIMEOUT_MS）
+            latch.await(DNS_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+            // 取消所有未完成的任务
+            executor.shutdownNow()
+            return result.getNow(emptyList())
+        } catch (e: Exception) {
+            executor.shutdownNow()
+            return emptyList()
+        }
     }
 
     /** 判断是否为已知被污染的域名 */

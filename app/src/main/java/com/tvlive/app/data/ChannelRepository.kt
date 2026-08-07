@@ -43,6 +43,9 @@ class ChannelRepository(private val context: Context) {
      * 初始化默认源
      *
      * 支持版本迁移：当 DefaultSources.VERSION 变化时，会清除旧默认源并重新插入
+     *
+     * v5 升级特殊处理：v5 将默认源精简为单一 iptv-org 源（github.io 版本），
+     * 需要清理 v3/v4 时期预置的多余源（zbds、fanmingming、大壮哥哥等）
      */
     suspend fun initDefaultSources() {
         val prefs = context.getSharedPreferences("tvlive_prefs", Context.MODE_PRIVATE)
@@ -56,12 +59,37 @@ class ChannelRepository(private val context: Context) {
             }
             prefs.edit().putInt("sources_version", DefaultSources.VERSION).apply()
         } else if (savedVersion < DefaultSources.VERSION) {
-            // 版本升级：更新默认源的 URL（保留用户自定义源）
+            // 版本升级
             Log.i("ChannelRepository", "Upgrading sources from v$savedVersion to v${DefaultSources.VERSION}")
-            val existingSources = sourceDao.getAllSourcesList()
 
+            // v5 升级：清理旧版本预置的多余源
+            // 仅清理已知内置源名称，保留用户自定义源
+            val legacySourceNames = setOf(
+                "iptv-org 中国频道",
+                "iptv-org 全球频道",
+                "zbds 每日更新源",
+                "fanmingming 直播源",
+                "fanmingming 直播源(IPv4)",
+                "fanmingming 直播源(IPv6)",
+                "joevess 央视卫视源",
+                "yuanzl77 国内直播源",
+                "Free-TV 全球免费",
+                "Collect-IPTV 精选合集",
+                "大壮哥哥 live TV"
+            )
+            val existingSources = sourceDao.getAllSourcesList()
+            for (existing in existingSources) {
+                if (existing.name in legacySourceNames) {
+                    channelDao.deleteBySource(existing.id)
+                    sourceDao.delete(existing)
+                    Log.i("ChannelRepository", "Removed legacy source: ${existing.name}")
+                }
+            }
+
+            // 插入/更新当前版本的默认源
+            val currentSources = sourceDao.getAllSourcesList()
             for (defaultSource in DefaultSources.sources) {
-                val existing = existingSources.find { it.name == defaultSource.name }
+                val existing = currentSources.find { it.name == defaultSource.name }
                 if (existing != null) {
                     // 更新已有源的 URL
                     if (existing.url != defaultSource.url) {
@@ -220,37 +248,80 @@ class ChannelRepository(private val context: Context) {
         }
     }
 
+    /**
+     * 并行获取 URL 内容（5G 网络优化关键）
+     *
+     * 同时发起所有镜像 URL 的请求，第一个成功的响应即返回，其余请求自动取消。
+     * 这避免了顺序尝试时单个慢镜像拖慢整体加载的问题。
+     *
+     * 5G 网络下：并行请求所有镜像，通常 0.5-2 秒内即可完成
+     * 4G/3G 网络下：并行请求避免单镜像超时拖慢
+     * 弱网下：最坏情况等于最慢镜像的超时时间
+     *
+     * 实现细节：使用 CompletableDeferred 实现"先成功者胜"语义。
+     * 每个镜像在独立 async 中请求，成功时 complete() 结果，
+     * 失败时记录但不抛出（避免影响其他镜像）。
+     * 所有镜像都失败时才 completeExceptionally()。
+     *
+     * @param url 原始 URL（会被 UrlHelper 转换为多个镜像 URL）
+     * @return 第一个成功响应的内容
+     */
     private suspend fun fetchUrl(url: String): String = withContext(Dispatchers.IO) {
-        // 获取原始 URL + 镜像备选 URL 列表
         val alternativeUrls = UrlHelper.getAlternativeUrls(url)
-        var lastError: Exception? = null
+        Log.i("ChannelRepository", "Parallel fetching ${alternativeUrls.size} URLs for: $url")
 
-        for (attemptUrl in alternativeUrls) {
-            try {
-                Log.d("ChannelRepository", "Fetching: $attemptUrl")
-                val request = Request.Builder()
-                    .url(attemptUrl)
-                    .header("User-Agent", HttpClientProvider.USER_AGENT)
-                    .build()
+        val result = kotlinx.coroutines.CompletableDeferred<String>()
+        val supervisorJob = kotlinx.coroutines.SupervisorJob()
+        val scope = kotlinx.coroutines.CoroutineScope(supervisorJob + Dispatchers.IO)
 
-                httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        throw RuntimeException("HTTP ${response.code}")
+        val jobs = alternativeUrls.map { attemptUrl ->
+            scope.async {
+                try {
+                    Log.d("ChannelRepository", "Fetching: $attemptUrl")
+                    val request = Request.Builder()
+                        .url(attemptUrl)
+                        .header("User-Agent", HttpClientProvider.USER_AGENT)
+                        .header("Accept-Encoding", "gzip")
+                        .build()
+
+                    httpClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            throw RuntimeException("HTTP ${response.code}")
+                        }
+                        val body = response.body?.string()
+                        if (body.isNullOrBlank()) {
+                            throw RuntimeException("空响应")
+                        }
+                        Log.i("ChannelRepository", "✓ Success: $attemptUrl (${body.length} chars)")
+                        result.complete(body)
                     }
-                    val body = response.body?.string()
-                    if (body.isNullOrBlank()) {
-                        throw RuntimeException("空响应")
-                    }
-                    return@withContext body
+                } catch (e: Exception) {
+                    Log.w("ChannelRepository", "✗ Failed: $attemptUrl: ${e.message}")
+                    // 不抛出异常，让其他镜像继续尝试
                 }
-            } catch (e: Exception) {
-                lastError = e
-                Log.w("ChannelRepository", "Fetch failed for $attemptUrl: ${e.message}")
-                // 继续尝试下一个备选 URL
             }
         }
 
-        throw lastError ?: RuntimeException("所有 URL 均无法访问: $url")
+        // 监控所有 job，全部完成时检查是否没有任何成功
+        val watchdog = scope.async {
+            try {
+                jobs.awaitAll()
+            } catch (_: Exception) { }
+            // 所有 job 都完成，若 result 仍未完成，说明全部失败
+            if (!result.isCompleted) {
+                result.completeExceptionally(
+                    RuntimeException("所有 ${alternativeUrls.size} 个镜像 URL 均无法访问: $url")
+                )
+            }
+        }
+
+        try {
+            result.await()
+        } finally {
+            // 取消所有未完成的请求和 watchdog
+            supervisorJob.cancel()
+            watchdog.cancel()
+        }
     }
 
     // ==================== 频道操作 ====================
