@@ -14,6 +14,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import android.util.Log
 import com.tvlive.app.net.HttpClientProvider
 import com.tvlive.app.net.UrlHelper
@@ -227,16 +228,24 @@ class TvPlayerManager(private val context: Context) {
             OkHttpDataSource.Factory(okHttpClient).setUserAgent(HttpClientProvider.USER_AGENT)
         )
 
+        // 5G 中国移动网络优化：自定义 LoadErrorHandlingPolicy
+        // - MEDIA 数据（分片）：重试 3 次（5G 网络下瞬时丢包快速恢复）
+        // - MANIFEST（HLS playlist）：重试 5 次（直播 playlist 重载失败时多容错）
+        // - 其他类型：重试 3 次
+        // - 失败后由 handlePlayerError 进行 URL 级别切换
+        val loadErrorPolicy = object : DefaultLoadErrorHandlingPolicy() {
+            override fun getMinimumLoadableRetryCount(loadType: Int): Int =
+                if (loadType == androidx.media3.exoplayer.upstream.Loader.DATA_TYPE_MANIFEST) 5 else 3
+        }
+
         return if (url.contains(".m3u8", ignoreCase = true)) {
-            // 5G 网络优化：HLS 直播使用较短的 playlist 重载间隔和更快的错误检测
-            // - minLoadableRetryCount：5G 网络下重试 3 拿足够，避免长时间卡在失败 URL
-            // - playlist loader 通过 OkHttp 的超时控制
+            // HLS 直播：通过 OkHttp 控制 playlist 重载超时
             HlsMediaSource.Factory(dataSourceFactory)
-                .setMinLoadableRetryCount(3)
+                .setLoadErrorHandlingPolicy(loadErrorPolicy)
                 .createMediaSource(mediaItem)
         } else {
             DefaultMediaSourceFactory(dataSourceFactory)
-                .setMinLoadableRetryCount(3)
+                .setLoadErrorHandlingPolicy(loadErrorPolicy)
                 .createMediaSource(mediaItem)
         }
     }
