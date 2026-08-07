@@ -281,7 +281,9 @@ class PlayerActivity : AppCompatActivity() {
         binding.loadingView.visibility = View.VISIBLE
         binding.errorView.visibility = View.GONE
 
-        playerManager.play(channel.url)
+        // 传入主 URL + M3U 中解析出的备用 URL 列表
+        // 播放器会自动尝试所有 URL 直到成功（关键：应对中国移动网络屏蔽）
+        playerManager.play(channel.url, channel.getBackupUrlList())
         binding.playerView.player = playerManager.player
 
         lifecycleScope.launch {

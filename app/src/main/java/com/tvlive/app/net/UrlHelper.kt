@@ -5,6 +5,19 @@ import android.util.Log
 /**
  * URL 镜像工具
  *
+ * 解决两类被中国移动网络封锁的 URL：
+ *
+ * 1. **M3U 播放列表 URL**（加载源时）
+ *    - GitHub raw / jsdelivr 等被 DNS 污染或 IP 封锁的域名
+ *    - 通过 jsDelivr CDN、GitHub 代理、清华镜像等绕过
+ *
+ * 2. **流媒体 URL**（播放电视台时）
+ *    - 中国移动 IPTV IPv6 流（[2409:8087:5e00:24::1e]:6060）：用户没有 IPv6 时无法播放，
+ *      增加 IPv4 镜像（39.135.34.150 等）作为备选
+ *    - 被封锁的境外 CDN（akamaized、cloudfront 等）：通过国内代理前缀绕过
+ *    - HTTPS 流被 SNI 阻断时，尝试 HTTP 降级
+ *    - 多 URL 合并：调用方传入 backupUrls 时一起返回
+ *
  * 中国移动网络对 GitHub 域名存在多重封锁：
  * 1. DNS 污染 - 返回错误 IP（cdn.jsdelivr.net 自2022年起被污染）
  * 2. IP 层封锁 - 即使 DNS 正确，TCP 连接也被防火墙阻断
@@ -22,7 +35,44 @@ object UrlHelper {
     private const val TAG = "UrlHelper"
 
     /**
-     * 判断是否为被中国移动网络封锁的域名
+     * 中国移动 IPTV IPv6 多播地址前缀
+     * 这些流只在移动网络内可用，且需要 IPv6 支持
+     */
+    private const val CMCC_IPV6_HOST = "[2409:8087:5e00:24::1e]:6060"
+    private const val CMCC_IPV6_HOST_ALT = "[2409:8087:5e00:24::1e]"
+    private const val CMCC_IPV6_PATH_PREFIX = "/200000001898/4990000898000"
+
+    /**
+     * 中国移动 IPTV 的 IPv4 镜像服务器列表（按优先级）
+     * 这些 IP 同样指向移动 IPTV CDN，对没有 IPv6 的用户作为备选
+     *
+     * 注：实际可用性取决于用户所在省份，部分省份会校验来源 IP
+     */
+    private val CMCC_IPV4_MIRRORS = listOf(
+        "39.135.34.150:6060",     // 全国通用移动 IPTV CDN
+        "39.135.34.136:6060",     // 备用
+        "39.134.67.181:6060",     // 备用
+        "39.134.67.10:6060",      // 备用
+        "gslbserv.itv.cmcc.cn"    // 移动 IPTV 域名（DNS 解析到最近节点）
+    )
+
+    /**
+     * 已知被中国移动网络封锁的境外 CDN 域名
+     * 这些域名即使 DNS 正确也无法直接连接
+     */
+    private val BLOCKED_STREAM_DOMAINS = listOf(
+        "akamaized.net",
+        "akamaihd.net",
+        "cloudfront.net",
+        "fastly.net",
+        "llnwi.net",
+        "edgecastcdn.net",
+        "azureedge.net",
+        "cdn77.org"
+    )
+
+    /**
+     * 判断是否为被中国移动网络封锁的域名（M3U 播放列表 URL）
      * 这些域名即使 DNS 解析正确也无法连接
      */
     fun isBlockedDomain(url: String): Boolean {
@@ -35,7 +85,25 @@ object UrlHelper {
     }
 
     /**
-     * 为给定 URL 生成备选 URL 列表
+     * 判断 URL 是否为中国移动 IPTV IPv6 流
+     */
+    fun isCmccIpv6Stream(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains("2409:8087") ||
+               lower.contains(CMCC_IPV6_HOST.lowercase()) ||
+               lower.contains(CMCC_IPV6_HOST_ALT.lowercase())
+    }
+
+    /**
+     * 判断 URL 是否使用了被封锁的境外 CDN 域名
+     */
+    fun isBlockedStreamDomain(url: String): Boolean {
+        val lower = url.lowercase()
+        return BLOCKED_STREAM_DOMAINS.any { lower.contains(it) }
+    }
+
+    /**
+     * 为给定 URL 生成备选 URL 列表（M3U 播放列表 URL 用）
      *
      * 对于被封锁的域名：镜像 URL 排在前面，原始 URL 排在最后
      * 对于普通域名：只有原始 URL（SafeDns 已能解决 DNS 问题）
@@ -131,5 +199,92 @@ object UrlHelper {
 
         Log.d(TAG, "Generated ${urls.size} alternative URLs for: $originalUrl")
         return urls.distinct()
+    }
+
+    /**
+     * 为流媒体播放 URL 生成备选 URL 列表（关键修复）
+     *
+     * 这是针对直播源被中国移动网络屏蔽的核心解决方案：
+     *
+     * 1. 中国移动 IPTV IPv6 流 → 增加 IPv4 镜像（无 IPv6 用户可用）
+     * 2. 被封锁的境外 CDN → 通过国内代理前缀绕过
+     * 3. HTTPS 流 → 尝试 HTTP 降级（移动网络对部分 HTTPS 流做 SNI 阻断）
+     * 4. 调用方提供的 backupUrls → 一并加入候选列表
+     *
+     * @param originalUrl 频道原始流 URL
+     * @param backupUrls M3U 解析出的备用 URL 列表（可为空）
+     * @return 按优先级排列的 URL 列表，原始 URL 始终包含
+     */
+    fun getStreamAlternativeUrls(originalUrl: String, backupUrls: List<String> = emptyList()): List<String> {
+        val urls = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
+
+        fun addCandidate(url: String) {
+            if (url.isNotBlank() && seen.add(url.lowercase())) {
+                urls.add(url)
+            }
+        }
+
+        // ==================== 中国移动 IPTV IPv6 流 → 增加 IPv4 镜像 ====================
+        if (isCmccIpv6Stream(originalUrl)) {
+            Log.d(TAG, "Detected CMCC IPv6 stream, adding IPv4 mirrors: $originalUrl")
+
+            // 提取 IPv6 后的路径部分
+            // 形如: http://[2409:8087:5e00:24::1e]:6060/200000001898/4990000898000/1.m3u8
+            val pathStart = originalUrl.indexOf("]", ignoreCase = true)
+            if (pathStart > 0) {
+                val afterBracket = originalUrl.substring(pathStart + 1)
+                // 跳过 ":port" 部分，取路径
+                val pathPart = afterBracket.substringAfter("/", "/")
+                val streamPath = if (pathPart.startsWith("/")) pathPart else "/$pathPart"
+
+                // 1. 各 IPv4 镜像（保持原始路径）
+                for (mirror in CMCC_IPV4_MIRRORS) {
+                    addCandidate("http://$mirror$streamPath")
+                }
+
+                // 2. 域名形式（DNS 解析到最近节点，更稳定）
+                if (streamPath.startsWith(CMCC_IPV6_PATH_PREFIX)) {
+                    val tailPath = streamPath.substringAfter(CMCC_IPV6_PATH_PREFIX)
+                    addCandidate("http://gslbserv.itv.cmcc.cn$CMCC_IPV6_PATH_PREFIX$tailPath")
+                }
+            }
+        }
+
+        // ==================== 被封锁的境外 CDN → 代理前缀 ====================
+        if (isBlockedStreamDomain(originalUrl)) {
+            Log.d(TAG, "Detected blocked CDN stream, adding proxy: $originalUrl")
+            // 通过国内反代访问
+            addCandidate("https://gh-proxy.com/$originalUrl")
+            addCandidate("https://ghproxy.net/$originalUrl")
+            addCandidate("https://corsproxy.io/?url=$originalUrl")
+        }
+
+        // ==================== HTTPS 流 → HTTP 降级（仅当不是 GitHub 等强制 HTTPS 域名） ====================
+        if (originalUrl.startsWith("https://", ignoreCase = true) &&
+            !isBlockedDomain(originalUrl) &&
+            !isBlockedStreamDomain(originalUrl)) {
+            // 部分移动网络对特定 HTTPS 流做 SNI 阻断，HTTP 可绕过
+            val httpVersion = "http://" + originalUrl.substring(8)
+            addCandidate(httpVersion)
+        }
+
+        // ==================== M3U 提供的备用 URL ====================
+        for (backup in backupUrls) {
+            // 递归处理每个备用 URL（可能也是 IPv6 或 CDN）
+            if (backup != originalUrl) {
+                addCandidate(backup)
+                // 同时为备用 URL 也生成镜像
+                if (isCmccIpv6Stream(backup) || isBlockedStreamDomain(backup)) {
+                    getStreamAlternativeUrls(backup, emptyList()).forEach { addCandidate(it) }
+                }
+            }
+        }
+
+        // ==================== 原始 URL 始终包含（作为兜底） ====================
+        addCandidate(originalUrl)
+
+        Log.d(TAG, "Generated ${urls.size} stream alternatives for: $originalUrl")
+        return urls
     }
 }

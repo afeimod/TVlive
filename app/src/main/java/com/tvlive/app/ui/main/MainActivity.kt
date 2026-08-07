@@ -403,7 +403,8 @@ class MainActivity : AppCompatActivity() {
         binding.tvLoadingText.text = getString(R.string.player_loading)
         binding.errorView.visibility = View.GONE
 
-        playerManager.play(channel.url)
+        // 传入主 URL + 备用 URL 列表，播放器自动降级（关键：应对中国移动网络屏蔽）
+        playerManager.play(channel.url, channel.getBackupUrlList())
         binding.playerView.player = playerManager.player
 
         lifecycleScope.launch {

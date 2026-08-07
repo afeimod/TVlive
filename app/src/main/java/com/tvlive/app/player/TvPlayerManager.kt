@@ -14,13 +14,21 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
+import android.util.Log
 import com.tvlive.app.net.HttpClientProvider
+import com.tvlive.app.net.UrlHelper
 
 /**
  * 基于 Media3 ExoPlayer 的电视直播播放器管理
  *
  * 支持 HLS(m3u8)、HTTP/HTTPS 直播流
  * 自动重连、错误处理
+ *
+ * **中国移动网络优化（关键）**：
+ * - 一个频道可能对应多个 URL（主 URL + backupUrls + 自动生成的镜像 URL）
+ * - 播放失败时自动按顺序尝试下一个 URL，直到成功或全部失败
+ * - 每个 URL 单独计数重试，单 URL 失败 2 次后切换到下一个 URL
+ * - 已失败的 URL 在本次播放会话内不再尝试（避免循环）
  */
 class TvPlayerManager(private val context: Context) {
 
@@ -30,13 +38,29 @@ class TvPlayerManager(private val context: Context) {
     private val okHttpClient = HttpClientProvider.playerClient
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
+    /** 当前频道的主 URL */
     private var currentUrl: String? = null
+
+    /** 当前频道的所有备选 URL 列表（按优先级排序） */
+    private var currentAlternativeUrls: List<String> = emptyList()
+
+    /** 当前正在尝试的 URL 索引 */
+    private var currentUrlIndex = 0
+
+    /** 当前 URL 的重试次数 */
     private var retryCount = 0
-    private val maxRetry = 3
+
+    /** 单个 URL 最大重试次数（超过则切换到下一个 URL） */
+    private val maxRetryPerUrl = 2
+
+    /** 当前会话内已知失败的 URL（避免重复尝试） */
+    private val failedUrls = mutableSetOf<String>()
 
     var onError: ((String) -> Unit)? = null
     var onLoading: (() -> Unit)? = null
     var onReady: (() -> Unit)? = null
+    /** 当前实际播放的 URL 变化时回调（用于 UI 显示） */
+    var onUrlSwitched: ((url: String) -> Unit)? = null
 
     /**
      * Media3 AudioAttributes - 告诉系统这是媒体播放
@@ -67,6 +91,7 @@ class TvPlayerManager(private val context: Context) {
                         when (state) {
                             Player.STATE_BUFFERING -> onLoading?.invoke()
                             Player.STATE_READY -> {
+                                // 重置当前 URL 的重试计数（播放成功）
                                 retryCount = 0
                                 onReady?.invoke()
                             }
@@ -76,15 +101,7 @@ class TvPlayerManager(private val context: Context) {
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
-                        if (retryCount < maxRetry) {
-                            retryCount++
-                            // 自动重连
-                            postDelayed(1000L) {
-                                currentUrl?.let { play(it) }
-                            }
-                        } else {
-                            onError?.invoke("播放失败: ${error.errorCodeName}. 请尝试切换其他源或频道")
-                        }
+                        handlePlayerError(error)
                     }
                 })
                 playWhenReady = true
@@ -92,12 +109,84 @@ class TvPlayerManager(private val context: Context) {
     }
 
     /**
-     * 播放指定 URL
+     * 处理播放错误：当前 URL 重试或切换到下一个备选 URL
      */
-    fun play(url: String) {
+    private fun handlePlayerError(error: PlaybackException) {
+        val currentAttemptUrl = currentAlternativeUrls.getOrNull(currentUrlIndex) ?: currentUrl
+        Log.w(TAG, "Player error on URL[$currentUrlIndex]: $currentAttemptUrl - ${error.errorCodeName}")
+
+        // 标记当前 URL 为失败
+        currentAttemptUrl?.let { failedUrls.add(it) }
+
+        retryCount++
+        if (retryCount <= maxRetryPerUrl && currentAttemptUrl != null) {
+            // 同一 URL 重试（网络抖动等瞬时错误）
+            Log.d(TAG, "Retrying URL[$currentUrlIndex] attempt $retryCount/$maxRetryPerUrl")
+            postDelayed(800L) {
+                currentAttemptUrl.let { playSingleUrl(it) }
+            }
+            return
+        }
+
+        // 当前 URL 已达重试上限，尝试切换到下一个备选 URL
+        retryCount = 0
+        val nextIndex = findNextAvailableUrlIndex()
+        if (nextIndex >= 0) {
+            currentUrlIndex = nextIndex
+            val nextUrl = currentAlternativeUrls[nextIndex]
+            Log.i(TAG, "Switching to alternative URL[$nextIndex]: $nextUrl")
+            onUrlSwitched?.invoke(nextUrl)
+            postDelayed(300L) {
+                playSingleUrl(nextUrl)
+            }
+        } else {
+            // 所有 URL 都失败
+            Log.e(TAG, "All ${currentAlternativeUrls.size} URLs failed for channel")
+            onError?.invoke(
+                "播放失败：已尝试 ${currentAlternativeUrls.size} 个备用地址均无法连接。\n" +
+                "可能原因：当前网络（如中国移动）对该直播源存在屏蔽，或所有源地址均已失效。\n" +
+                "建议：在设置中刷新直播源，或切换到其他频道。"
+            )
+        }
+    }
+
+    /** 查找下一个未失败的备选 URL 索引 */
+    private fun findNextAvailableUrlIndex(): Int {
+        for (i in currentAlternativeUrls.indices) {
+            if (i == currentUrlIndex) continue
+            val url = currentAlternativeUrls[i]
+            if (url !in failedUrls) return i
+        }
+        return -1
+    }
+
+    /**
+     * 播放指定频道（支持多 URL 自动降级）
+     *
+     * @param url 频道主 URL
+     * @param backupUrls M3U 解析出的备用 URL（可选）
+     */
+    fun play(url: String, backupUrls: List<String> = emptyList()) {
         currentUrl = url
         retryCount = 0
+        failedUrls.clear()
 
+        // 生成完整备选 URL 列表：镜像 URL + 备用 URL + 原始 URL
+        currentAlternativeUrls = UrlHelper.getStreamAlternativeUrls(url, backupUrls)
+        currentUrlIndex = 0
+
+        Log.i(TAG, "Starting playback with ${currentAlternativeUrls.size} candidate URLs")
+        currentAlternativeUrls.forEachIndexed { i, u ->
+            Log.d(TAG, "  [$i] $u")
+        }
+
+        val player = player ?: createPlayer().also { player = it }
+        playSingleUrl(currentAlternativeUrls.first())
+    }
+
+    /** 仅播放单个 URL（内部使用） */
+    private fun playSingleUrl(url: String) {
+        Log.d(TAG, "playSingleUrl: $url")
         val player = player ?: createPlayer().also { player = it }
 
         val mediaItem = MediaItem.Builder()
@@ -133,6 +222,10 @@ class TvPlayerManager(private val context: Context) {
         player?.release()
         player = null
         currentUrl = null
+        currentAlternativeUrls = emptyList()
+        currentUrlIndex = 0
+        retryCount = 0
+        failedUrls.clear()
     }
 
     fun pause() {
@@ -198,5 +291,9 @@ class TvPlayerManager(private val context: Context) {
 
     private fun postDelayed(delayMs: Long, action: () -> Unit) {
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(action, delayMs)
+    }
+
+    companion object {
+        private const val TAG = "TvPlayerManager"
     }
 }

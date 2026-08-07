@@ -6,6 +6,10 @@ import com.google.gson.annotations.SerializedName
 
 /**
  * 频道数据模型
+ *
+ * url: 主播放 URL
+ * backupUrls: 备用 URL 列表（来自 M3U 中同一频道的多 URL，用 | 分隔存储）
+ *             播放失败时按顺序尝试，提高在中国移动网络下的可用性
  */
 @Entity(tableName = "channels")
 data class Channel(
@@ -19,8 +23,13 @@ data class Channel(
     val tvgName: String? = null,
     val sourceId: Long = 0,
     var favorite: Boolean = false,
-    var channelNumber: Int = 0
+    var channelNumber: Int = 0,
+    val backupUrls: String = ""
 ) {
+    /** 获取备用 URL 列表（按 | 分隔解析） */
+    fun getBackupUrlList(): List<String> =
+        if (backupUrls.isBlank()) emptyList()
+        else backupUrls.split("|").map { it.trim() }.filter { it.isNotBlank() }
     companion object {
         const val GROUP_CCTV = "央视"
         const val GROUP_SATELLITE = "卫视"

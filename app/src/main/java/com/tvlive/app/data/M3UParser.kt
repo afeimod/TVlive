@@ -13,6 +13,11 @@ import com.tvlive.app.data.model.Source
  *
  * 也支持简单 TXT 格式：
  * 频道名称,http://...
+ *
+ * 中国移动网络优化：
+ * - 同一频道名在 M3U 中出现多次时（许多 IPTV 聚合源常见做法），
+ *   自动合并为单条 Channel，主 URL 取第一条，其余 URL 作为 backupUrls
+ * - 这样播放失败时可以自动尝试下一个 URL，提高可用性
  */
 object M3UParser {
 
@@ -30,7 +35,10 @@ object M3UParser {
         // 检测格式
         val isM3U = content.trim().startsWith("#EXTM3U", ignoreCase = true)
 
-        return if (isM3U) parseM3U(content, source) else parseTxt(content, source)
+        val rawChannels = if (isM3U) parseM3U(content, source) else parseTxt(content, source)
+
+        // 合并同名频道（不同 URL 作为 backupUrls）
+        return mergeSameNameChannels(rawChannels)
     }
 
     private fun parseM3U(content: String, source: Source): List<Channel> {
@@ -64,17 +72,23 @@ object M3UParser {
                 currentGroup = trimmed.substringAfter(":").trim()
             } else if (!trimmed.startsWith("#")) {
                 // 这是 URL 行
-                if (currentName.isNotBlank()) {
+                // 部分聚合源用 | 分隔多个 URL，全部作为该频道的 URL 候选
+                val urlVariants = trimmed.split("|").map { it.trim() }.filter { it.isNotBlank() }
+                if (currentName.isNotBlank() && urlVariants.isNotEmpty()) {
                     val finalGroup = classifyGroup(currentGroup, currentName)
+                    val primaryUrl = urlVariants.first()
+                    val backups = if (urlVariants.size > 1) urlVariants.drop(1).joinToString("|") else ""
+
                     channels.add(
                         Channel(
                             name = currentName,
-                            url = trimmed,
+                            url = primaryUrl,
                             logo = currentLogo,
                             group = finalGroup,
                             tvgId = currentTvgId,
                             tvgName = currentTvgName ?: currentName,
-                            sourceId = source.id
+                            sourceId = source.id,
+                            backupUrls = backups
                         )
                     )
                 }
@@ -122,6 +136,42 @@ object M3UParser {
             }
         }
         return channels
+    }
+
+    /**
+     * 合并同名频道：将多个同名条目的 URL 合并为第一条的 backupUrls
+     *
+     * 许多 IPTV 聚合源为同一频道提供多个流地址（不同清晰度/CDN/备份），
+     * 合并后播放器可按顺序自动尝试，遇到被中国移动网络屏蔽的 URL 时
+     * 自动降级到下一个，显著提高播放成功率
+     */
+    private fun mergeSameNameChannels(channels: List<Channel>): List<Channel> {
+        if (channels.isEmpty()) return channels
+
+        val merged = mutableListOf<Channel>()
+        val nameToIndex = mutableMapOf<String, Int>()
+        // 用小写 + 去空格做归一化匹配
+        fun normalize(s: String) = s.lowercase().replace("\\s+".toRegex(), "").trim()
+
+        for (ch in channels) {
+            val key = normalize(ch.name)
+            val existingIdx = nameToIndex[key]
+            if (existingIdx == null) {
+                merged.add(ch)
+                nameToIndex[key] = merged.size - 1
+            } else {
+                val existing = merged[existingIdx]
+                val allBackups = buildList {
+                    if (existing.backupUrls.isNotBlank()) addAll(existing.getBackupUrlList())
+                    if (ch.url != existing.url) add(ch.url)
+                    addAll(ch.getBackupUrlList())
+                }.distinct().filter { it != existing.url }
+
+                merged[existingIdx] = existing.copy(backupUrls = allBackups.joinToString("|"))
+            }
+        }
+
+        return merged
     }
 
     /**

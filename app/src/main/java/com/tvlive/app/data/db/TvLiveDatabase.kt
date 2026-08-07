@@ -11,7 +11,7 @@ import com.tvlive.app.data.model.Source
 
 @Database(
     entities = [Channel::class, Source::class, PlayHistory::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class TvLiveDatabase : RoomDatabase() {

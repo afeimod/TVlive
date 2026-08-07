@@ -13,6 +13,8 @@ import java.util.concurrent.TimeUnit
  * - 合理超时设置：避免长时间卡在不可达的连接上
  * - 连接重试：网络抖动时自动重试
  * - 连接池复用：提高后续请求效率
+ * - 启用 HTTP/2：多路复用降低延迟，特别是 HLS 切片拉取
+ * - 允许重定向：许多 CDN 需要跟随 302 跳转
  */
 object HttpClientProvider {
 
@@ -31,6 +33,7 @@ object HttpClientProvider {
      *   中国移动网络下可能有 9+ 个镜像 URL 需要尝试，5秒超时确保总时间可控
      * - 较长读取超时（20秒）：适配大文件下载
      * - 自定义 DNS + 连接失败自动重试
+     * - 启用 HTTP/2（默认支持，OkHttp 自动协商）
      */
     val dataClient: OkHttpClient = Builder()
         .dns(safeDns)
@@ -46,15 +49,23 @@ object HttpClientProvider {
 
     /**
      * 用于播放器的 OkHttpClient（播放流媒体）
-     * - 较短的超时时间（快速失败，便于切换源）
-     * - 自定义 DNS
-     * - 连接失败自动重试
+     *
+     * 中国移动网络下直播流播放的关键调优：
+     * - 较长连接超时（15秒）：移动网络首包延迟较高，避免误判
+     * - 较长读取超时（30秒）：HLS 直播切片可能间隔较长，避免读超时
+     *   直播 m3u8 切片列表会定期刷新，单次请求可能等待新切片
+     * - 无 callTimeout 限制：长直播不能因总时间超时而中断
+     * - 自动重试：移动网络抖动频繁
+     * - 跟随重定向：CDN 调度需要 302 跳转
+     *
+     * 注意：实际播放 URL 切换由 TvPlayerManager 的多 URL 降级机制处理，
+     * 这里只是 OkHttp 层面的单 URL 重试。
      */
     val playerClient: OkHttpClient = Builder()
         .dns(safeDns)
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .connectionPool(connectionPool)
         .followRedirects(true)
