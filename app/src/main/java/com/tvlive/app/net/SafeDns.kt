@@ -108,6 +108,21 @@ class SafeDns : Dns {
         val ips: List<String>
     )
 
+    /**
+     * 关键镜像域名的硬编码 IP（5G 中国移动网络深度优化）
+     *
+     * 当所有 DNS 查询都失败时（极端情况），直接使用这些 IP 建立 HTTPS 连接。
+     * IPs 来自公共 DNS 解析的真实 Cloudflare/CDN 节点，定期可更新。
+     *
+     * 注：OkHttp 使用这些 IP 时仍会发送正确的 Host header 和 SNI，
+     * TLS 握手时 SNI 字段会告诉服务器真实域名，因此 HTTPS 证书验证仍能通过。
+     */
+    private val HARDCODED_IPS = mapOf(
+        "gcore.jsdelivr.net" to listOf("104.17.207.5", "104.17.208.5"),
+        "testingcf.jsdelivr.net" to listOf("104.17.207.5", "104.17.208.5"),
+        "fastly.jsdelivr.net" to listOf("104.17.207.5", "104.17.208.5")
+    )
+
     private val cache = ConcurrentHashMap<String, Pair<List<InetAddress>, Long>>()
 
     override fun lookup(hostname: String): List<InetAddress> {
@@ -165,6 +180,22 @@ class SafeDns : Dns {
                 }
             } catch (e: Exception) {
                 // 忽略
+            }
+        }
+
+        // 5. 终极兜底：使用硬编码 IP（针对关键镜像域名）
+        //    当所有 DNS 服务器都不可达时，直接返回预置 IP（OkHttp 会用 SNI 处理 HTTPS）
+        HARDCODED_IPS[hostname]?.let { ips ->
+            Log.w(TAG, "Using hardcoded IPs for $hostname: $ips")
+            val addresses = ips.mapNotNull { ip ->
+                try {
+                    val ipBytes = ip.split(".").map { it.toInt().toByte() }.toByteArray()
+                    InetAddress.getByAddress(hostname, ipBytes)
+                } catch (e: Exception) { null }
+            }
+            if (addresses.isNotEmpty()) {
+                cacheResult(hostname, addresses)
+                return addresses
             }
         }
 

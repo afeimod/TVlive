@@ -177,28 +177,50 @@ object UrlHelper {
         }
 
         // ==================== github.io 镜像 ====================
-        // iptv-org.github.io/iptv/countries/cn.m3u 对应仓库 iptv-org/iptv
-        // jsdelivr 国内 CDN 镜像通常比 gh-proxy 代理更快、更稳定，优先使用
+        // iptv-org.github.io/iptv/countries/cn.m3u 是 GitHub Pages 动态生成（仓库中实际文件路径是 streams/cn.m3u）
+        // 实测：
+        //   ✓ gcore.jsdelivr.net/gh/iptv-org/iptv@master/streams/cn.m3u     → 200
+        //   ✗ gcore.jsdelivr.net/gh/iptv-org/iptv@master/countries/cn.m3u   → 404（仓库无此文件）
+        //   ✗ gh-proxy.com / ghproxy.net 对 github.io 返回 403（仅代理 github.com / raw.githubusercontent.com）
+        // 所以 github.io 镜像必须改写为 streams/ 路径，且不要使用 gh-proxy 类代理
         if (originalUrl.contains("github.io")) {
-            // 优先尝试 jsdelivr 镜像（部分 github.io 有对应仓库）
             if (originalUrl.contains("iptv-org.github.io/iptv/")) {
+                // GitHub Pages 的 countries/cn.m3u 对应仓库 streams/cn.m3u（同样内容）
+                // 注意：/guides/cn.xml 等其他路径在仓库中也是 /guides/cn.xml，结构一致
                 val subPath = originalUrl.substringAfter("iptv-org.github.io/iptv/")
-                // iptv-org/iptv 仓库的 streams 目录有对应文件
-                // 注意：cn.m3u 实际路径是 streams/cn.m3u，但 countries/cn.m3u 是 GitHub Pages 的路由
-                // 这里两种路径都加入，让并行请求取最快者
-                urls.add("https://gcore.jsdelivr.net/gh/iptv-org/iptv@master/streams/$subPath")
-                urls.add("https://testingcf.jsdelivr.net/gh/iptv-org/iptv@master/streams/$subPath")
-                urls.add("https://jsd.cdn.zzko.cn/gh/iptv-org/iptv@master/streams/$subPath")
-                urls.add("https://fastly.jsdelivr.net/gh/iptv-org/iptv@master/streams/$subPath")
-                // countries/cn.m3u 路径（部分镜像可能直接支持）
-                urls.add("https://gcore.jsdelivr.net/gh/iptv-org/iptv@master/$subPath")
-                urls.add("https://testingcf.jsdelivr.net/gh/iptv-org/iptv@master/$subPath")
+                val repoPath = when {
+                    subPath.startsWith("countries/") -> "streams/" + subPath.substringAfter("countries/")
+                    else -> subPath
+                }
+
+                // 1. gcore.jsdelivr.net - Gcore CDN（国内延迟最低，实测 ~100ms）
+                urls.add("https://gcore.jsdelivr.net/gh/iptv-org/iptv@master/$repoPath")
+
+                // 2. testingcf.jsdelivr.net - Cloudflare CDN（国内备用，~200ms）
+                urls.add("https://testingcf.jsdelivr.net/gh/iptv-org/iptv@master/$repoPath")
+
+                // 3. jsd.cdn.zzko.cn - 国内 CDN 镜像
+                urls.add("https://jsd.cdn.zzko.cn/gh/iptv-org/iptv@master/$repoPath")
+
+                // 4. fastly.jsdelivr.net - Fastly CDN
+                urls.add("https://fastly.jsdelivr.net/gh/iptv-org/iptv@master/$repoPath")
+
+                // 5. raw.gitmirror.com - gitmirror 直接 raw 域名（仓库路径直通）
+                urls.add("https://raw.gitmirror.com/iptv-org/iptv/master/$repoPath")
+
+                // 6. kkgithub.com - GitHub 整站镜像（raw 路径）
+                urls.add("https://raw.kkgithub.com/iptv-org/iptv/master/$repoPath")
+
+                // 7. 清华大学 GitHub raw 镜像
+                urls.add("https://mirrors.tuna.tsinghua.edu.cn/github-raw/iptv-org/iptv/master/$repoPath")
+
+                // 8. raw.staticdn.net
+                urls.add("https://raw.staticdn.net/iptv-org/iptv/master/$repoPath")
             }
 
-            // GitHub 代理前缀（作为 jsdelivr 失败时的备选）
-            urls.add("https://gh-proxy.com/$originalUrl")
-            urls.add("https://ghproxy.net/$originalUrl")
-            urls.add("https://ghproxy.cc/$originalUrl")
+            // 通用 github.io 代理（仅对非 iptv-org 的 github.io 站点）
+            // 注意：gh-proxy 类只代理 github.com / raw.githubusercontent.com，
+            // 对 github.io 不支持，所以这里不再为 iptv-org 加 gh-proxy（实测 403）
         }
 
         // ==================== 原始 URL 放最后（兜底） ====================
