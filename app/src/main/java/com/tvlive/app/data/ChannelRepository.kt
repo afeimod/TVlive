@@ -139,9 +139,14 @@ class ChannelRepository(private val context: Context) {
     /**
      * 从网络加载所有启用的源并解析频道
      *
-     * 使用并行加载：所有源同时请求，每个源完成后立即插入数据库
-     * 这样 UI 的 allChannels flow 能尽早收到频道数据并开始播放
-     * 如果所有网络源都失败（如中国移动网络封锁），会自动加载内置备用频道
+     * 中国移动 5G 网络深度优化策略（v2）：
+     *
+     * 1. 并行加载所有启用的源（每个源 8s 超时）
+     * 2. **关键变更**：无论网络源是否成功，都把内置备用频道追加到列表末尾
+     *    这样即使 iptv-org 加载成功但其流地址被屏蔽，用户也能切换到内置频道播放
+     * 3. 内置备用频道使用真实可用的中国移动 IPTV IPv6 URL（来自 yuanzl77/IPTV）
+     *    在移动 5G/4G/宽带网络内可直接访问
+     * 4. 同名频道会被合并（保留多 URL），播放器自动降级尝试
      */
     suspend fun refreshAllSources(onProgress: ((current: Int, total: Int, sourceName: String) -> Unit)? = null): RefreshResult {
         val sources = getEnabledSources()
@@ -193,19 +198,39 @@ class ChannelRepository(private val context: Context) {
 
         val sc = successCount.get()
         val fc = failCount.get()
-        val tc = totalChannels.get()
 
-        // 所有网络源都失败时，加载内置备用频道（兜底）
-        if (sc == 0) {
-            Log.w("ChannelRepository", "All network sources failed, loading fallback channels from assets")
-            val fallbackChannels = loadFallbackChannels()
-            if (fallbackChannels.isNotEmpty()) {
+        // 关键策略：始终追加内置备用频道（即使网络源成功也追加）
+        // 原因：iptv-org 的 cn.m3u 包含许多被中国移动屏蔽的境外 CDN 流（69.x, 74.91.x, 198.204.x 等北美 IP），
+        // 网络源"加载成功"不代表"流能播放"。内置频道使用真实可用的移动 IPTV IPv6 URL，作为可靠备份。
+        Log.i("ChannelRepository", "Appending fallback channels (network sources loaded $sc/${sources.size})")
+        val fallbackChannels = loadFallbackChannels()
+        if (fallbackChannels.isNotEmpty()) {
+            val existingNames = channelDao.getAllNames().toSet()
+            // 只插入网络源中没有的频道，避免重复
+            val newFallback = fallbackChannels.filter { it.name !in existingNames }
+            if (newFallback.isNotEmpty()) {
+                channelDao.insertAll(newFallback)
+                Log.i("ChannelRepository", "Appended ${newFallback.size} fallback channels (skipped ${fallbackChannels.size - newFallback.size} duplicates)")
+            }
+            // 全部网络源失败时，所有备用频道都会被插入
+            if (sc == 0 && newFallback.isEmpty() && fallbackChannels.isNotEmpty()) {
                 channelDao.insertAll(fallbackChannels)
-                return RefreshResult(1, fc, fallbackChannels.size, errors + "网络源全部失败，已加载内置备用频道")
+                Log.i("ChannelRepository", "All network sources failed, all ${fallbackChannels.size} fallback channels loaded")
             }
         }
 
-        return RefreshResult(sc, fc, tc, errors.toList())
+        val finalTotalInDb = channelDao.count()
+        val finalErrors = if (sc == 0 && fallbackChannels.isNotEmpty()) {
+            errors + "网络源全部失败，已加载内置备用频道"
+        } else {
+            errors.toList()
+        }
+        return RefreshResult(
+            successCount = if (sc == 0 && fallbackChannels.isNotEmpty()) 1 else sc,
+            failCount = fc,
+            totalChannels = finalTotalInDb,
+            errors = finalErrors
+        )
     }
 
     /**

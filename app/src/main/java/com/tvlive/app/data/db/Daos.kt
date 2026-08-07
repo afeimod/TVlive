@@ -26,6 +26,12 @@ interface ChannelDao {
     @Query("SELECT COUNT(*) FROM channels")
     suspend fun count(): Int
 
+    @Query("SELECT * FROM channels ORDER BY `group`, channelNumber, name")
+    suspend fun getAllChannelsList(): List<Channel>
+
+    @Query("SELECT name FROM channels")
+    suspend fun getAllNames(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(channels: List<Channel>)
 

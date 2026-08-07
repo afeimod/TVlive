@@ -144,6 +144,11 @@ object M3UParser {
      * 许多 IPTV 聚合源为同一频道提供多个流地址（不同清晰度/CDN/备份），
      * 合并后播放器可按顺序自动尝试，遇到被中国移动网络屏蔽的 URL 时
      * 自动降级到下一个，显著提高播放成功率
+     *
+     * 中国移动网络优化：
+     * - URL 排序优先级：国内域名 > 中国移动 IPTV IPv6 > 国内 IP > 其他
+     * - 已知被屏蔽的境外 IP（北美 69.x, 74.91.x, 198.204.x 等）排到最后
+     *   这样播放器优先尝试可达的 URL，失败再尝试不可达的，提升首播成功率
      */
     private fun mergeSameNameChannels(channels: List<Channel>): List<Channel> {
         if (channels.isEmpty()) return channels
@@ -161,17 +166,64 @@ object M3UParser {
                 nameToIndex[key] = merged.size - 1
             } else {
                 val existing = merged[existingIdx]
-                val allBackups = buildList {
+                // 收集所有 URL（existing + 当前），按可达性排序后重新组织
+                val allUrls = buildList {
+                    add(existing.url)
                     if (existing.backupUrls.isNotBlank()) addAll(existing.getBackupUrlList())
                     if (ch.url != existing.url) add(ch.url)
                     addAll(ch.getBackupUrlList())
-                }.distinct().filter { it != existing.url }
+                }.distinct()
 
-                merged[existingIdx] = existing.copy(backupUrls = allBackups.joinToString("|"))
+                // 按可达性排序：国内域名/移动 IPTV IPv6 优先，已知屏蔽 IP 排后
+                val sortedUrls = allUrls.sortedWith(compareBy { urlRank(it) })
+                val primaryUrl = sortedUrls.first()
+                val backups = sortedUrls.drop(1).filter { it != primaryUrl }
+
+                merged[existingIdx] = existing.copy(
+                    url = primaryUrl,
+                    backupUrls = backups.joinToString("|")
+                )
             }
         }
 
         return merged
+    }
+
+    /**
+     * URL 可达性排序：值越小优先级越高
+     *
+     * 中国移动 5G 网络下的可达性优先级：
+     * 0. 中国移动 IPTV IPv6（[2409:8087...]）- 移动网络内必达
+     * 1. 国内域名（.cn / .com.cn / 国内 CDN 域名）- 通常可达
+     * 2. 国内 IP 段（39.13x, 112.x, 117.x, 183.x, 223.x 等）- 通常可达
+     * 3. 其他未识别 URL - 中性
+     * 4. 已知被屏蔽的境外 IP（69.x, 74.91.x, 198.204.x, 192.151.x 等北美 IPTV 服务器）- 必定屏蔽
+     */
+    private fun urlRank(url: String): Int {
+        val lower = url.lowercase()
+        return when {
+            // 中国移动 IPTV IPv6 - 最高优先级
+            lower.contains("2409:8087") || lower.contains("[2409:") -> 0
+            // 国内域名
+            lower.contains(".cn/") || lower.contains(".cn:") || lower.endsWith(".cn") ||
+            lower.contains("chinamobile.com") || lower.contains("voc.com.cn") ||
+            lower.contains("cctv.com") || lower.contains(".edu.cn") -> 1
+            // 已知被屏蔽的境外 IPTV 服务器（北美）
+            lower.startsWith("http://69.") || lower.startsWith("http://74.91.") ||
+            lower.startsWith("http://198.204.") || lower.startsWith("http://192.151.") ||
+            lower.startsWith("http://23.") || lower.startsWith("http://45.") ||
+            lower.startsWith("http://104.") || lower.startsWith("http://162.") -> 4
+            // 国内 IP 段（中国移动/电信/联通）
+            lower.startsWith("http://39.1") || lower.startsWith("http://39.134.") ||
+            lower.startsWith("http://39.135.") || lower.startsWith("http://112.") ||
+            lower.startsWith("http://117.") || lower.startsWith("http://118.") ||
+            lower.startsWith("http://121.") || lower.startsWith("http://122.") ||
+            lower.startsWith("http://123.") || lower.startsWith("http://183.") ||
+            lower.startsWith("http://218.") || lower.startsWith("http://222.") ||
+            lower.startsWith("http://223.") -> 2
+            // 其他
+            else -> 3
+        }
     }
 
     /**

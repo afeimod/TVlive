@@ -256,28 +256,38 @@ object UrlHelper {
         }
 
         // ==================== 中国移动 IPTV IPv6 流 → 增加 IPv4 镜像 ====================
+        // 注意：IPv4 镜像（39.135.34.150 等）只对应 [2409:8087:5e00:24::1e]:6060 这一个 IPv6 主机
+        // 其他 IPv6 主机（如 [2409:8087:3869:8021:1001::e5]:6610、[2409:8087:1a01:df::4077]:80）
+        // 走的是不同的 CDN 节点，不能简单替换为 IPv4 - 这种情况保留原始 IPv6 URL，让播放器直接尝试
         if (isCmccIpv6Stream(originalUrl)) {
-            Log.d(TAG, "Detected CMCC IPv6 stream, adding IPv4 mirrors: $originalUrl")
+            val isLegacyHost = originalUrl.contains("[2409:8087:5e00:24::1e]:6060", ignoreCase = true) ||
+                    originalUrl.contains("[2409:8087:5e00:24::1e]/", ignoreCase = true) ||
+                    originalUrl.contains("[2409:8087:5e00:24::1f]", ignoreCase = true)
 
-            // 提取 IPv6 后的路径部分
-            // 形如: http://[2409:8087:5e00:24::1e]:6060/200000001898/4990000898000/1.m3u8
-            val pathStart = originalUrl.indexOf("]", ignoreCase = true)
-            if (pathStart > 0) {
-                val afterBracket = originalUrl.substring(pathStart + 1)
-                // 跳过 ":port" 部分，取路径
-                val pathPart = afterBracket.substringAfter("/", "/")
-                val streamPath = if (pathPart.startsWith("/")) pathPart else "/$pathPart"
+            if (isLegacyHost) {
+                Log.d(TAG, "Detected legacy CMCC IPTV host, adding IPv4 mirrors: $originalUrl")
 
-                // 1. 各 IPv4 镜像（保持原始路径）
-                for (mirror in CMCC_IPV4_MIRRORS) {
-                    addCandidate("http://$mirror$streamPath")
+                // 提取 IPv6 后的路径部分
+                val pathStart = originalUrl.indexOf("]", ignoreCase = true)
+                if (pathStart > 0) {
+                    val afterBracket = originalUrl.substring(pathStart + 1)
+                    val pathPart = afterBracket.substringAfter("/", "/")
+                    val streamPath = if (pathPart.startsWith("/")) pathPart else "/$pathPart"
+
+                    // 1. 各 IPv4 镜像（保持原始路径）
+                    for (mirror in CMCC_IPV4_MIRRORS) {
+                        addCandidate("http://$mirror$streamPath")
+                    }
+
+                    // 2. 域名形式（DNS 解析到最近节点，更稳定）
+                    if (streamPath.startsWith(CMCC_IPV6_PATH_PREFIX)) {
+                        val tailPath = streamPath.substringAfter(CMCC_IPV6_PATH_PREFIX)
+                        addCandidate("http://gslbserv.itv.cmcc.cn$CMCC_IPV6_PATH_PREFIX$tailPath")
+                    }
                 }
-
-                // 2. 域名形式（DNS 解析到最近节点，更稳定）
-                if (streamPath.startsWith(CMCC_IPV6_PATH_PREFIX)) {
-                    val tailPath = streamPath.substringAfter(CMCC_IPV6_PATH_PREFIX)
-                    addCandidate("http://gslbserv.itv.cmcc.cn$CMCC_IPV6_PATH_PREFIX$tailPath")
-                }
+            } else {
+                // 其他 CMCC IPv6 主机 - 保留原始 IPv6 URL，不生成无效的 IPv4 镜像
+                Log.d(TAG, "CMCC IPv6 stream with non-legacy host, keeping original: $originalUrl")
             }
         }
 
