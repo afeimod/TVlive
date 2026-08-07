@@ -229,13 +229,17 @@ class TvPlayerManager(private val context: Context) {
         )
 
         // 5G 中国移动网络优化：自定义 LoadErrorHandlingPolicy
-        // - MEDIA 数据（分片）：重试 3 次（5G 网络下瞬时丢包快速恢复）
-        // - MANIFEST（HLS playlist）：重试 5 次（直播 playlist 重载失败时多容错）
-        // - 其他类型：重试 3 次
-        // - 失败后由 handlePlayerError 进行 URL 级别切换
+        // getMinimumLoadableRetryCount(loadType: Int) 接收的 loadType 取值：
+        //   DATA_TYPE_MEDIA = 0 (分片/init/媒体数据)
+        //   DATA_TYPE_MANIFEST = 1 (HLS playlist / DASH MPD)
+        //   DATA_TYPE_DRM = 2
+        // 策略：manifest 多重试（直播 playlist 周期性重载，5G 瞬时丢包时给更多容错）；
+        //       media 少重试（快速失败后由 handlePlayerError 切换到下一个镜像 URL）。
+        // 失败后由 handlePlayerError 进行 URL 级别切换。
+        val DATA_TYPE_MANIFEST = 1
         val loadErrorPolicy = object : DefaultLoadErrorHandlingPolicy() {
             override fun getMinimumLoadableRetryCount(loadType: Int): Int =
-                if (loadType == androidx.media3.exoplayer.upstream.Loader.DATA_TYPE_MANIFEST) 5 else 3
+                if (loadType == DATA_TYPE_MANIFEST) 5 else 3
         }
 
         return if (url.contains(".m3u8", ignoreCase = true)) {
