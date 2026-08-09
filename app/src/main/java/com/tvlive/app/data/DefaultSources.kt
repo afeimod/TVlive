@@ -51,7 +51,7 @@ object DefaultSources {
     /** APK AES 解密密钥（从 jadx 反编译 libjerry.so JNI 提取） */
     const val AES_KEY = "you!je@19rr$20y#"
     /** APK AES IV */
-    const val AES_IV_BYTES = byteArrayOf(65, 114, 101, 121, 111, 117, 124, 62, 127, 110, 54, 38, 13, 97, 110, 63)
+    val AES_IV_BYTES = byteArrayOf(65, 114, 101, 121, 111, 117, 124, 62, 127, 110, 54, 38, 13, 97, 110, 63)
 
     /** EPG 节目单地址（GitHub URL，UrlHelper自动生成镜像） */
     const val EPG_URL = "https://iptv-org.github.io/iptv/guides/cn.xml"

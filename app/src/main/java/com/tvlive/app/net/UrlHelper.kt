@@ -375,15 +375,21 @@ object UrlHelper {
     private fun ispAwareUrlRank(url: String): Int {
         val lower = url.lowercase()
         return when {
-            // 中国移动 IPTV IPv6 - 最高优先级
+            // 咪咕CDN（miguvideo.com）→ 中国移动自有CDN，最高优先级
+            // 从APK反编译分析：咪咕CDN在移动网络下天然不被屏蔽
+            lower.contains("miguvideo.com") -> 0
+            // 中国移动 IPTV IPv6 - 极高优先级
             lower.contains("2409:8087") -> 0
             // 移动 IPTV IPv4 镜像
             lower.contains("39.135.") || lower.contains("39.134.") ||
             lower.contains("gslbserv.itv.cmcc.cn") -> 1
+            // 腾讯视频CDN（video.qq.com）→ 移动网络下通常可用
+            lower.contains("video.qq.com") || lower.contains("tcloud") -> 2
             // 国内域名
             lower.contains(".cn/") || lower.contains(".cn:") || lower.endsWith(".cn") ||
             lower.contains("chinamobile.com") || lower.contains("cctv.com") ||
-            lower.contains("pdtvhd.com") -> 2
+            lower.contains("cctv.cn") || lower.contains("cntv.cn") ||
+            lower.contains("pdtvhd.com") || lower.contains("douyincdn.com") -> 2
             // 代理/镜像 URL（通过代理访问境外内容）
             lower.contains("gh-proxy.com") || lower.contains("ghproxy.net") ||
             lower.contains("ghproxy.cc") || lower.contains("corsproxy.io") ||
