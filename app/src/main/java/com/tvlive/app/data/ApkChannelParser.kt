@@ -13,37 +13,42 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * APK 加密频道数据解析器（v2 增强版）
+ * APK 加密频道数据解析器（v3 - 完全按APK运行时逻辑）
  *
- * 解析电视直播APK的 dszb3.gz 数据格式：
- * 1. gzip 解压 → JSON
- * 2. JSON 中每个频道的 urls 数组包含 AES-128-CBC 加密的 URL
- * 3. 使用从 APK 反编译提取的密钥解密
- * 4. 支持 ISP 标签（$Y=移动, $D=电信, $L=联通, $i6=IPv6）
- * 5. 增强协议前缀处理：
- *    - sys_http:// → http://（系统播放器，绕DNS缓存）
- *    - ikkHeaders:// → 提取嵌入URL + 记录Headers
- *    - yscj://http://... → 提取嵌入HTTP URL
- *    - 其他自定义协议 → 尝试提取嵌入的http(s) URL
- * 6. 移动网络URL优先级排序：
- *    咪咕CDN > $Y标签 > sys_player > 腾讯CDN > 抖音CDN > CCTV CDN > 通用
+ * 核心逻辑（与APK完全一致）：
  *
- * 密钥来源：jadx 反编译 → libjerry.so JNI → getJniString() → "you!je@19rr$20y#"
+ * 1. gzip解压 → JSON解析 → 获取Channels对象
+ * 2. 对每个Channel的urls数组，逐个AES解密
+ * 3. 解密后检查ISP标签（$Y/$D/$L）和IPv6标签（$i6）
+ *    - 有$标签 → 只保留匹配当前ISP的URL（APK的Channel.setUrls逻辑）
+ *    - $i6 → 只在IPv6可用时保留
+ *    - 无$标签 → 所有ISP通用，始终保留
+ * 4. 保留URL的原始协议前缀（sys_http://, ikkHeaders://等）
+ *    不在这里解析，而是在播放时由Channel.resolveForPlayback()解析
+ *    这与APK一致——APK也是存原始加密URL，播放时才解密+协议解析
+ * 5. URL按CDN优先级排序（移动网络：咪咕 > $Y > sys_ > 腾讯 > 抖音）
+ *
+ * 密钥来源：jadx反编译 → libjerry.so JNI → getJniString() → "you!je@19rr$20y#"
  */
 object ApkChannelParser {
 
     private const val TAG = "ApkChannelParser"
 
-    /** URL 优先级信息 */
-    private data class UrlInfo(
-        val url: String,
-        val priority: Int,
-        val headers: Map<String, String> = emptyMap()
-    )
-
-    /** AES 解密并解析为可播放URL */
-    private fun decryptAndResolve(encryptedBase64: String, ispTag: String? = null): UrlInfo? {
+    /**
+     * AES解密单个URL，并按ISP过滤（完全按APK的Channel.setUrls()逻辑）
+     *
+     * @param encryptedBase64 AES加密+Base64编码的URL
+     * @param currentIspTag 当前ISP标签："Y"=移动, "D"=电信, "L"=联通, null=未知
+     * @param ipv6Supported 设备是否支持IPv6（对应APK的App.g）
+     * @return 解密后的URL（保留协议前缀），如果ISP不匹配则返回null
+     */
+    private fun decryptAndFilter(
+        encryptedBase64: String,
+        currentIspTag: String?,
+        ipv6Supported: Boolean
+    ): String? {
         return try {
+            // AES-128-CBC 解密
             val raw = android.util.Base64.decode(encryptedBase64, android.util.Base64.NO_WRAP)
             val keySpec = SecretKeySpec(DefaultSources.AES_KEY.toByteArray(Charsets.UTF_8), "AES")
             val ivSpec = IvParameterSpec(DefaultSources.AES_IV_BYTES)
@@ -52,168 +57,78 @@ object ApkChannelParser {
             val decrypted = cipher.doFinal(raw)
             var url = String(decrypted, Charsets.UTF_8)
 
-            var isIpv6 = false
-            var urlIspTag: String? = null
-            var priority = 0
-
-            // ========== 处理 IPv6 标签 ==========
+            // ========== 1. 处理 $i6 后缀（IPv6专用URL）==========
+            // 按APK逻辑：只有App.g=true时才保留$i6 URL
             if (url.endsWith("\$i6")) {
-                isIpv6 = true
-                url = url.dropLast(3)
-                priority += 40  // IPv6 在移动网络下是重要回退
+                if (!ipv6Supported) {
+                    return null  // 不支持IPv6，丢弃此URL
+                }
+                url = url.dropLast(3)  // 去掉$i6后缀
             }
 
-            // ========== 处理 ISP 标签 ==========
-            // $Y = 中国移动专用CDN, $D = 中国电信, $L = 中国联通
+            // ========== 2. 处理 $ISP 标签（按APK的Channel.setUrls逻辑）==========
+            // $Y=移动专用CDN, $D=电信专用CDN, $L=联通专用CDN
             if (url.contains("\$")) {
                 val parts = url.split("\$", limit = 2)
-                url = parts[0]
-                val tag = parts.getOrNull(1) ?: ""
+                val actualUrl = parts[0]
+                val ispTag = parts.getOrNull(1) ?: ""
 
-                if (tag.isNotEmpty()) {
-                    urlIspTag = tag
-                    // ISP 标签优先级（为移动网络优化）
-                    when {
-                        tag.startsWith("Y") -> priority += 80  // 移动专用CDN，最高优先级
-                        tag.startsWith("D") -> priority -= 10  // 电信CDN，移动网络下优先级低
-                        tag.startsWith("L") -> priority -= 10  // 联通CDN，移动网络下优先级低
+                if (ispTag.isNotEmpty()) {
+                    // 按APK逻辑：只有匹配当前ISP才保留
+                    // TextUtils.isEmpty(App.f) → ISP未知，保留所有
+                    // substring.toUpperCase().contains(App.f.toUpperCase()) → 标签匹配
+                    val isMatch = currentIspTag == null ||  // ISP未知，保留所有
+                                  ispTag.uppercase().contains(currentIspTag.uppercase())
+
+                    if (!isMatch) {
+                        return null  // 不匹配当前ISP，丢弃（APK中直接不add到urls列表）
                     }
 
-                    // ISP 标签过滤：只保留匹配当前运营商的URL
-                    if (ispTag != null && tag.length <= 2) {
-                        val isMatch = when {
-                            tag.startsWith("Y") && ispTag == "Y" -> true
-                            tag.startsWith("D") && ispTag == "D" -> true
-                            tag.startsWith("L") && ispTag == "L" -> true
-                            tag.startsWith("i6") -> true
-                            else -> false
-                        }
-                        if (!isMatch) return null  // 不匹配当前ISP，丢弃
-                    }
+                    // 匹配：只保留$前面的实际URL部分
+                    url = actualUrl
                 }
             }
 
-            // ========== 协议前缀解析 ==========
-            var headers = mutableMapOf<String, String>()
+            // ========== 3. 保留协议前缀（播放时再解析）==========
+            // 这是关键：APK也是存原始URL，播放时才在IjkVideoView.setVideoPath()中解析
+            // sys_http:// → 播放时去掉sys_，用系统播放器
+            // ikkHeaders:// → 播放时解析?url=&Referer=，注入Headers
+            // http(s):// → 直接播放
+            // 其他协议（migutv, ccto, gwpd等）→ 无法播放，过滤掉
 
-            when {
-                // sys_http:// → 去掉sys_前缀，使用系统播放器（绕过IJK DNS缓存/DNS污染）
-                url.startsWith("sys_http://") -> {
-                    url = "http://" + url.removePrefix("sys_http://")
-                    priority += 60  // 系统播放器在移动网络下更可靠
-                }
-                url.startsWith("sys_https://") -> {
-                    url = "https://" + url.removePrefix("sys_https://")
-                    priority += 60
-                }
-                // sys_ 前缀的其他协议，尝试提取嵌入的HTTP URL
-                url.startsWith("sys_") -> {
-                    val inner = url.removePrefix("sys_")
-                    if (inner.startsWith("http://") || inner.startsWith("https://")) {
-                        url = inner
-                        priority += 60
-                    } else {
-                        return null  // sys_ + 未知内部协议
-                    }
-                }
+            url = when {
+                // 可直接转换的协议 → 保留前缀
+                url.startsWith("sys_http://") -> url
+                url.startsWith("sys_https://") -> url
+                url.startsWith("sys_yscj://") -> url  // 播放时去掉sys_前缀
+                url.startsWith("ikkHeaders://") -> url
+                url.startsWith("kooHeaders://") -> url
+                url.startsWith("Headers://") -> url
+                url.startsWith("ikk://") -> url
+                url.startsWith("koo://") -> url
 
-                // ikkHeaders:// → 解析 ?url=xxx&Referer=yyy 格式
-                // 注入自定义HTTP Headers(Referer/Origin)绕过CDN防盗链
-                url.startsWith("ikkHeaders://") || url.startsWith("kooHeaders://") -> {
-                    val resolved = resolveHeadersUrl(url)
-                    if (resolved != null) {
-                        url = resolved.first
-                        headers = resolved.second.toMutableMap()
-                        priority += 50
-                    } else {
-                        return null
-                    }
-                }
-                url.startsWith("Headers://") -> {
-                    val resolved = resolveHeadersUrl(url)
-                    if (resolved != null) {
-                        url = resolved.first
-                        headers = resolved.second.toMutableMap()
-                        priority += 50
-                    } else {
-                        return null
-                    }
-                }
-
-                // ikk:// → 解析 ?url=xxx 格式
-                url.startsWith("ikk://") || url.startsWith("koo://") -> {
-                    val innerUrl = extractParam(url, "url")
-                    if (innerUrl != null) {
-                        url = innerUrl
-                    } else {
-                        return null
-                    }
-                }
-
-                // yscj:// → 可能包含嵌入的HTTP URL
-                // 格式1: yscj://CCTV2 (频道ID，无法解析)
-                // 格式2: yscj://http://xxx (嵌入HTTP URL)
+                // yscj:// 可能包含嵌入的HTTP URL
                 url.startsWith("yscj://") || url.startsWith("ysnew://") -> {
                     val inner = url.removePrefix("yscj://").removePrefix("ysnew://")
-                    if (inner.startsWith("http://") || inner.startsWith("https://")) {
-                        url = inner
-                        priority += 20  // 云视超清源
-                    } else {
-                        return null  // 频道ID格式，无法直接解析
-                    }
+                    if (inner.startsWith("http://") || inner.startsWith("https://")) inner else null
                 }
 
                 // 直接HTTP/HTTPS URL
-                url.startsWith("http://") || url.startsWith("https://") -> {
-                    // 直接可用，保持默认优先级
-                }
+                url.startsWith("http://") || url.startsWith("https://") -> url
 
-                // 咪咕视频CDN协议 → 需要SDK，无法直接播放
-                url.startsWith("migutv2://") ||
-                url.startsWith("migutv3://") ||
-                url.startsWith("miguytv://") ||
-                url.startsWith("miguak2://") -> {
-                    return null
-                }
+                // 无法播放的协议 → 过滤
+                url.startsWith("migutv") || url.startsWith("miguytv") ||
+                url.startsWith("miguak") || url.startsWith("dytv") ||
+                url.startsWith("gwpd") || url.startsWith("ccto") ||
+                url.startsWith("iqlorg") || url.startsWith("sccd") ||
+                url.startsWith("goodtv") || url.startsWith("touch") ||
+                url.startsWith("bestv") || url.startsWith("hentv") -> null
 
-                // 抖音协议 → 需要SDK
-                url.startsWith("dytv://") -> return null
-
-                // 购物频道 → 需要单独解析
-                url.startsWith("gwpd") -> return null
-
-                // CCTV OTT协议 → 需要SDK
-                url.startsWith("ccto://") -> return null
-
-                // 地方台自定义协议 → 需要各自的API，无法直接播放
-                // (iqlorg://, sccd://, goodtv://, touch://, bestv://, etc.)
-                else -> return null
+                // 其他未知协议 → 尝试保留（可能MainParser能解析）
+                else -> null
             }
 
-            // ========== CDN 优先级评估 ==========
-            // 咪咕CDN(miguvideo.com) → 中国移动自有CDN，不被屏蔽！
-            if (url.contains("miguvideo.com")) {
-                priority += 100
-            }
-            // 腾讯CDN
-            if (url.contains("video.qq.com") || url.contains("tcloud")) {
-                priority += 30
-            }
-            // 抖音CDN
-            if (url.contains("douyincdn.com")) {
-                priority += 20
-            }
-            // CCTV CDN
-            if (url.contains("cctv.cn") || url.contains("cntv.cn")) {
-                priority += 10
-            }
-
-            // 只保留可直接播放的 HTTP/HTTPS URL
-            if (url.startsWith("http://") || url.startsWith("https://")) {
-                UrlInfo(url, priority, headers)
-            } else {
-                null
-            }
+            url
         } catch (e: Exception) {
             Log.w(TAG, "Decrypt failed: ${e.message}")
             null
@@ -221,61 +136,39 @@ object ApkChannelParser {
     }
 
     /**
-     * 解析 Headers URL 格式
-     * ikkHeaders://?url=xxx&Referer=yyy&Origin=zzz
-     * @return Pair(实际URL, headers映射)
+     * CDN优先级评分（为移动网络优化）
+     * 按APK实际行为：咪咕CDN最优先（移动自有），然后sys_（绕DNS），然后其他
      */
-    private fun resolveHeadersUrl(url: String): Pair<String, Map<String, String>>? {
-        return try {
-            val qIndex = url.indexOf('?')
-            if (qIndex < 0) return null
+    private fun cdnPriority(url: String, ispTag: String?): Int {
+        var priority = 0
 
-            val params = url.substring(qIndex + 1)
-                .split("&")
-                .mapNotNull { part ->
-                    val eq = part.indexOf('=')
-                    if (eq > 0) {
-                        val key = URLDecoder.decode(part.substring(0, eq), "UTF-8")
-                        val value = URLDecoder.decode(part.substring(eq + 1), "UTF-8")
-                        key to value
-                    } else null
-                }
-                .toMap()
+        // 咪咕CDN → 移动自有，不被屏蔽
+        if (url.contains("miguvideo.com")) priority += 100
+        // sys_前缀 → 系统播放器，绕DNS缓存
+        if (url.startsWith("sys_")) priority += 80
+        // $Y标签 → 移动专用CDN
+        if (ispTag == "Y") priority += 60
+        // 腾讯CDN
+        if (url.contains("video.qq.com")) priority += 30
+        // 抖音CDN
+        if (url.contains("douyincdn.com")) priority += 20
+        // CCTV CDN
+        if (url.contains("cctv.cn") || url.contains("cntv.cn")) priority += 10
 
-            val actualUrl = params["url"] ?: return null
-            val headers = params.filterKeys { it != "url" }
-            Pair(actualUrl, headers)
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /** 从 URL 参数中提取指定参数值 */
-    private fun extractParam(url: String, key: String): String? {
-        return try {
-            val qIndex = url.indexOf('?')
-            if (qIndex < 0) return null
-            url.substring(qIndex + 1)
-                .split("&")
-                .find { it.startsWith("$key=") }
-                ?.substring(key.length + 1)
-                ?.let { URLDecoder.decode(it, "UTF-8") }
-        } catch (e: Exception) {
-            null
-        }
+        return priority
     }
 
     /**
-     * 解析 APK 的 gzip+JSON+AES 加密频道数据
+     * 解析APK的gzip+JSON+AES加密频道数据
      *
-     * @param rawData gzip 压缩的原始字节
+     * @param rawData gzip压缩的原始字节
      * @param source 数据源信息
      * @param ispTag 当前运营商标签 ("Y"=移动, "D"=电信, "L"=联通, null=未知)
-     * @return 解密后的频道列表
+     * @return 按ISP过滤后的频道列表
      */
     fun parse(rawData: ByteArray, source: Source, ispTag: String? = null): List<Channel> {
         try {
-            // 1. gzip 解压
+            // 1. gzip解压
             val jsonBytes = ByteArrayOutputStream().use { out ->
                 GZIPInputStream(ByteArrayInputStream(rawData)).use { gz ->
                     val buf = ByteArray(8192)
@@ -286,7 +179,7 @@ object ApkChannelParser {
             }
             val jsonStr = String(jsonBytes, Charsets.UTF_8)
 
-            // 2. 解析 JSON
+            // 2. 解析JSON
             val root = JSONObject(jsonStr)
             if (root.optInt("status") != 0) {
                 Log.w(TAG, "APK data status error: ${root.optInt("status")}")
@@ -294,59 +187,60 @@ object ApkChannelParser {
             }
 
             val dataArray = root.optJSONArray("data") ?: return emptyList()
+
+            // 3. 检测IPv6支持（对应APK的App.g）
+            val ipv6Supported = detectIpv6Support()
+
             val channels = mutableListOf<Channel>()
 
             for (i in 0 until dataArray.length()) {
                 val item = dataArray.getJSONObject(i)
                 val title = item.optString("title", "").trim()
                 val province = item.optString("province", "")
+                val ctype = item.optInt("ctype", -1)
                 val urlsArray = item.optJSONArray("urls") ?: continue
 
                 if (title.isBlank()) continue
 
-                // 3. 解密所有 URL，收集可播放URL及其优先级
-                val urlInfos = mutableListOf<UrlInfo>()
+                // 4. 解密+ISP过滤所有URL（按APK的Channel.setUrls逻辑）
+                val decryptedUrls = mutableListOf<Pair<String, Int>>()  // (url, priority)
                 for (j in 0 until urlsArray.length()) {
                     val encUrl = urlsArray.getString(j)
-                    val info = decryptAndResolve(encUrl, ispTag)
-                    if (info != null) {
-                        urlInfos.add(info)
+                    val decUrl = decryptAndFilter(encUrl, ispTag, ipv6Supported)
+                    if (decUrl != null && decUrl.isNotBlank()) {
+                        val priority = cdnPriority(decUrl, ispTag)
+                        decryptedUrls.add(Pair(decUrl, priority))
                     }
                 }
 
-                if (urlInfos.isEmpty()) continue
+                if (decryptedUrls.isEmpty()) continue
 
-                // 4. 按优先级排序（移动网络优化：咪咕CDN > $Y > sys > 腾讯 > 抖音 > CCTV）
-                urlInfos.sortByDescending { it.priority }
+                // 5. 按CDN优先级排序（移动网络优化）
+                decryptedUrls.sortByDescending { it.second }
 
-                // 5. 分类分组
+                // 6. 分类分组
                 val group = classifyGroup(province, title)
 
-                // 6. 创建 Channel（主URL + backupUrls）
-                val primary = urlInfos[0]
-                val backups = if (urlInfos.size > 1) {
-                    urlInfos.drop(1).take(5).joinToString("|") { it.url }
+                // 7. 创建Channel
+                // 主URL = 优先级最高的URL
+                // backupUrls = 其余URL（保留协议前缀，播放时由resolveForPlayback解析）
+                val primaryUrl = decryptedUrls[0].first
+                val backups = if (decryptedUrls.size > 1) {
+                    decryptedUrls.drop(1).take(5).joinToString("|") { it.first }
                 } else ""
-
-                // 7. 构建URL（如有Headers，编码到URL中供播放器使用）
-                val finalUrl = if (primary.headers.isNotEmpty()) {
-                    // 将headers编码到backupUrls字段，播放器会解析
-                    primary.url
-                } else {
-                    primary.url
-                }
 
                 channels.add(Channel(
                     name = title,
-                    url = finalUrl,
+                    url = primaryUrl,
                     group = group,
                     tvgName = title,
                     sourceId = source.id,
-                    backupUrls = backups
+                    backupUrls = backups,
+                    ctype = ctype
                 ))
             }
 
-            Log.i(TAG, "Parsed ${channels.size} channels from APK data (ISP: ${ispTag ?: "unknown"})")
+            Log.i(TAG, "Parsed ${channels.size} channels from APK data (ISP: ${ispTag ?: "unknown"}, IPv6: $ipv6Supported)")
             return channels
 
         } catch (e: Exception) {
@@ -355,9 +249,19 @@ object ApkChannelParser {
         }
     }
 
-    /** 检测数据是否为 APK 的 gzip+JSON 格式 */
+    /** 检测设备是否支持IPv6（对应APK的App.g = com.jerry.live.tv.utils.q.b()） */
+    private fun detectIpv6Support(): Boolean {
+        return try {
+            java.net.NetworkInterface.getNetworkInterfaces()?.toList()?.any { iface ->
+                iface.interfaceAddresses?.any { addr?.address is java.net.Inet6Address } == true
+            } == true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 检测数据是否为APK的gzip+JSON格式 */
     fun isApkData(data: ByteArray): Boolean {
-        // gzip magic number: 0x1f 0x8b
         return data.size >= 2 && data[0] == 0x1f.toByte() && data[1] == 0x8b.toByte()
     }
 

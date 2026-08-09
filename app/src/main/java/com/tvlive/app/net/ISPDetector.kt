@@ -148,8 +148,34 @@ object ISPDetector {
         val result = CompletableDeferred<ISPType>()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-        // 服务 1：pconline IP 归属地
+        // 服务 1：CIBN IPTV定位（APK首选方式，对应 Constants.LOCATION_URL_1）
+        // 返回JSON: {"remote":"IP地址","desc":"广东-电信"}
         val job1 = scope.async<Unit> {
+            try {
+                val request = Request.Builder()
+                    .url("http://g3com.cp21.ott.cibntv.net/r?format=1")
+                    .header("User-Agent", desktopUA)
+                    .build()
+                val body = httpClient.newCall(request).execute().use { resp ->
+                    if (resp.isSuccessful) resp.body?.string() else null
+                }
+                if (body != null) {
+                    // CIBN格式: {"remote":"x.x.x.x","desc":"广东-电信"} 或 {"desc":"北京移动"}
+                    val json = JSONObject(body)
+                    val desc = json.optString("desc", "")
+                    val isp = classifyISP(desc)
+                    if (isp != ISPType.UNKNOWN) {
+                        Log.d(TAG, "Detected ISP via CIBN: $isp ($desc)")
+                        result.complete(isp)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "CIBN ISP detection failed: ${e.message}")
+            }
+        }
+
+        // 服务 2：pconline IP归属地（APK备用方式，对应 Constants.LOCATION_URL_2）
+        val job2 = scope.async<Unit> {
             try {
                 val request = Request.Builder()
                     .url("http://whois.pconline.com.cn/ipJson.jsp")
@@ -223,7 +249,8 @@ object ISPDetector {
     private fun classifyISP(text: String): ISPType {
         val lower = text.lowercase()
         return when {
-            lower.contains("移动") || lower.contains("移通") || lower.contains("cmcc") ||
+            lower.contains("移动") || lower.contains("移通") || lower.contains("移") ||
+            lower.contains("cmcc") ||
             lower.contains("china mobile") || lower.contains("cmnet") -> ISPType.CMCC
             lower.contains("电信") || lower.contains("chinatelecom") ||
             lower.contains("china telecom") || lower.contains("chinanet") -> ISPType.TELECOM

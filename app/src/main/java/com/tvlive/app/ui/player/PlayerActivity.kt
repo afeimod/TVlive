@@ -108,6 +108,21 @@ class PlayerActivity : AppCompatActivity() {
             this.onError = this@PlayerActivity.onError
             this.onLoading = this@PlayerActivity.onLoading
             this.onReady = this@PlayerActivity.onReady
+            this.onUrlSwitched = { url ->
+                // URL切换时更新UI提示（显示当前使用的CDN源）
+                runOnUiThread {
+                    val cdnHint = when {
+                        url.contains("miguvideo.com") -> "咪咕CDN"
+                        url.contains("video.qq.com") -> "腾讯CDN"
+                        url.contains("douyincdn.com") -> "抖音CDN"
+                        url.contains("cctv.cn") || url.contains("cntv.cn") -> "CCTV CDN"
+                        url.contains("2409:8087") -> "移动IPv6"
+                        url.startsWith("sys_") || url.contains("39.135.") || url.contains("39.134.") -> "移动IPTV"
+                        else -> "备用源"
+                    }
+                    binding.tvChannelGroup.text = "${channels.getOrNull(currentIndex)?.group ?: ""} · $cdnHint"
+                }
+            }
         }
 
         setupChannelList()

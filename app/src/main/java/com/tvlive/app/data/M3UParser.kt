@@ -206,16 +206,22 @@ object M3UParser {
     private fun urlRank(url: String): Int {
         val lower = url.lowercase()
         return when {
+            // 咪咕CDN → 移动自有，最高优先级
+            lower.contains("miguvideo.com") -> 0
+            // sys_前缀 → 系统播放器+绕DNS缓存
+            lower.startsWith("sys_http") || lower.startsWith("sys_https") -> 0
             // 中国移动 IPTV IPv6 - 最高优先级
             lower.contains("2409:8087") || lower.contains("[2409:") -> 0
             // 国内域名（扩充：增加更多已知的国内 CDN/流媒体域名）
             lower.contains(".cn/") || lower.contains(".cn:") || lower.endsWith(".cn") ||
             lower.contains("chinamobile.com") || lower.contains("voc.com.cn") ||
-            lower.contains("cctv.com") || lower.contains(".edu.cn") ||
+            lower.contains("cctv.com") || lower.contains("cctv.cn") ||
+            lower.contains("cntv.cn") || lower.contains(".edu.cn") ||
             lower.contains("pdtvhd.com") || lower.contains("eac-news.com") ||
             lower.contains("itv.cmcc.cn") || lower.contains("ott.cibntv.net") ||
             lower.contains("bestv.com.cn") || lower.contains("kankanlive.com") ||
-            lower.contains("juyun.tv") || lower.contains("bread-tv.com") -> 1
+            lower.contains("juyun.tv") || lower.contains("bread-tv.com") ||
+            lower.contains("video.qq.com") || lower.contains("douyincdn.com") -> 1
             // 已知被屏蔽的境外 IPTV 服务器（北美）- 参考 APK 中被移动网络屏蔽的 IP 段
             lower.startsWith("http://69.") || lower.startsWith("http://74.91.") ||
             lower.startsWith("http://198.204.") || lower.startsWith("http://192.151.") ||
