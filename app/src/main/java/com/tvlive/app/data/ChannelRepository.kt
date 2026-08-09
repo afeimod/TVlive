@@ -8,6 +8,7 @@ import com.tvlive.app.data.model.ChannelGroup
 import com.tvlive.app.data.model.PlayHistory
 import com.tvlive.app.data.model.Source
 import com.tvlive.app.net.HttpClientProvider
+import com.tvlive.app.net.ISPDetector
 import com.tvlive.app.net.UrlHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitAll
@@ -165,8 +166,21 @@ class ChannelRepository(private val context: Context) {
             sources.map { source ->
                 async(Dispatchers.IO) {
                     try {
-                        val content = fetchUrl(source.url)
-                        val channels = M3UParser.parse(content, source)
+                        val rawData = fetchUrlBytes(source.url)
+                        val channels = if (ApkChannelParser.isApkData(rawData)) {
+                            // APK 加密频道数据：gzip + JSON + AES
+                            val ispTag = when (ISPDetector.currentISP) {
+                                ISPDetector.ISPType.CMCC -> "Y"
+                                ISPDetector.ISPType.TELECOM -> "D"
+                                ISPDetector.ISPType.UNICOM -> "L"
+                                else -> null
+                            }
+                            ApkChannelParser.parse(rawData, source, ispTag)
+                        } else {
+                            // 标准 M3U 格式
+                            val content = String(rawData, Charsets.UTF_8)
+                            M3UParser.parse(content, source)
+                        }
 
                         if (channels.isNotEmpty()) {
                             val channelsWithNumber = channels.mapIndexed { i, ch ->
@@ -255,8 +269,12 @@ class ChannelRepository(private val context: Context) {
      */
     suspend fun refreshSource(source: Source): List<Channel> = withContext(Dispatchers.IO) {
         try {
-            val content = fetchUrl(source.url)
-            val channels = M3UParser.parse(content, source)
+            val rawData = fetchUrlBytes(source.url)
+            val channels = if (ApkChannelParser.isApkData(rawData)) {
+                ApkChannelParser.parse(rawData, source)
+            } else {
+                M3UParser.parse(String(rawData, Charsets.UTF_8), source)
+            }
             channelDao.deleteBySource(source.id)
             val channelsWithNumber = channels.mapIndexed { i, ch ->
                 ch.copy(channelNumber = i + 1)
@@ -274,50 +292,40 @@ class ChannelRepository(private val context: Context) {
     }
 
     /**
-     * 并行获取 URL 内容（5G 网络优化关键）
+     * 并行获取 URL 内容为字节数组（5G 网络优化关键）
      *
+     * 支持 APK 的 gzip 二进制数据 和 M3U 文本数据
      * 同时发起所有镜像 URL 的请求，第一个成功的响应即返回，其余请求自动取消。
-     * 这避免了顺序尝试时单个慢镜像拖慢整体加载的问题。
-     *
-     * 5G 网络下：并行请求所有镜像，通常 0.5-2 秒内即可完成
-     * 4G/3G 网络下：并行请求避免单镜像超时拖慢
-     * 弱网下：最坏情况等于最慢镜像的超时时间
-     *
-     * 实现细节：使用 CompletableDeferred 实现"先成功者胜"语义。
-     * 每个镜像在独立 async 中请求，成功时 complete() 结果，
-     * 失败时记录但不抛出（避免影响其他镜像）。
-     * 所有镜像都失败时才 completeExceptionally()。
      *
      * @param url 原始 URL（会被 UrlHelper 转换为多个镜像 URL）
-     * @return 第一个成功响应的内容
+     * @return 第一个成功响应的原始字节
      */
-    private suspend fun fetchUrl(url: String): String = withContext(Dispatchers.IO) {
+    private suspend fun fetchUrlBytes(url: String): ByteArray = withContext(Dispatchers.IO) {
         val alternativeUrls = UrlHelper.getAlternativeUrls(url)
         Log.i("ChannelRepository", "Parallel fetching ${alternativeUrls.size} URLs for: $url")
 
-        val result = kotlinx.coroutines.CompletableDeferred<String>()
+        val result = kotlinx.coroutines.CompletableDeferred<ByteArray>()
         val supervisorJob = kotlinx.coroutines.SupervisorJob()
         val scope = kotlinx.coroutines.CoroutineScope(supervisorJob + Dispatchers.IO)
 
         val jobs = alternativeUrls.map { attemptUrl ->
-            scope.async {
+            scope.async<Unit> {
                 try {
                     Log.d("ChannelRepository", "Fetching: $attemptUrl")
                     val request = Request.Builder()
                         .url(attemptUrl)
                         .header("User-Agent", HttpClientProvider.USER_AGENT)
-                        .header("Accept-Encoding", "gzip")
                         .build()
 
                     httpClient.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) {
                             throw RuntimeException("HTTP ${response.code}")
                         }
-                        val body = response.body?.string()
-                        if (body.isNullOrBlank()) {
+                        val body = response.body?.bytes()
+                        if (body == null || body.isEmpty()) {
                             throw RuntimeException("空响应")
                         }
-                        Log.i("ChannelRepository", "✓ Success: $attemptUrl (${body.length} chars)")
+                        Log.i("ChannelRepository", "✓ Success: $attemptUrl (${body.size} bytes)")
                         result.complete(body)
                     }
                 } catch (e: Exception) {
@@ -328,7 +336,7 @@ class ChannelRepository(private val context: Context) {
         }
 
         // 监控所有 job，全部完成时检查是否没有任何成功
-        val watchdog = scope.async {
+        val watchdog = scope.async<Unit> {
             try {
                 jobs.awaitAll()
             } catch (_: Exception) { }
