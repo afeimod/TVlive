@@ -4,11 +4,16 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.Request
 import org.json.JSONObject
-import java.net.URLEncoder
 
 /**
  * 运营商（ISP）检测器
@@ -140,8 +145,8 @@ object ISPDetector {
         // 桌面浏览器 User-Agent 伪装（避免被服务端拒绝 TV 设备请求）
         val desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-        val result = kotlinx.coroutines.CompletableDeferred<ISPType>()
-        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+        val result = CompletableDeferred<ISPType>()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         // 服务 1：pconline IP 归属地
         val job1 = scope.async {
@@ -196,7 +201,7 @@ object ISPDetector {
 
         // 等待结果（最长 5 秒）
         try {
-            kotlinx.coroutines.withTimeout(5000L) {
+            withTimeout(5000L) {
                 try {
                     job1.await()
                     job2.await()
