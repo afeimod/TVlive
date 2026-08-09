@@ -192,23 +192,31 @@ object M3UParser {
     /**
      * URL 可达性排序：值越小优先级越高
      *
-     * 中国移动 5G 网络下的可达性优先级：
+     * 中国移动 5G 网络下的可达性优先级（参考 APK 的 ISP 标签策略）：
      * 0. 中国移动 IPTV IPv6（[2409:8087...]）- 移动网络内必达
      * 1. 国内域名（.cn / .com.cn / 国内 CDN 域名）- 通常可达
      * 2. 国内 IP 段（39.13x, 112.x, 117.x, 183.x, 223.x 等）- 通常可达
      * 3. 其他未识别 URL - 中性
      * 4. 已知被屏蔽的境外 IP（69.x, 74.91.x, 198.204.x, 192.151.x 等北美 IPTV 服务器）- 必定屏蔽
+     *
+     * ISP 感知增强：
+     * - 对于移动网络用户，增加更多国内 CDN 域名识别
+     * - 对于电信/联通用户，境外 CDN 可能可达（但此函数不处理 ISP 差异，由 UrlHelper 处理）
      */
     private fun urlRank(url: String): Int {
         val lower = url.lowercase()
         return when {
             // 中国移动 IPTV IPv6 - 最高优先级
             lower.contains("2409:8087") || lower.contains("[2409:") -> 0
-            // 国内域名
+            // 国内域名（扩充：增加更多已知的国内 CDN/流媒体域名）
             lower.contains(".cn/") || lower.contains(".cn:") || lower.endsWith(".cn") ||
             lower.contains("chinamobile.com") || lower.contains("voc.com.cn") ||
-            lower.contains("cctv.com") || lower.contains(".edu.cn") -> 1
-            // 已知被屏蔽的境外 IPTV 服务器（北美）
+            lower.contains("cctv.com") || lower.contains(".edu.cn") ||
+            lower.contains("pdtvhd.com") || lower.contains("eac-news.com") ||
+            lower.contains("itv.cmcc.cn") || lower.contains("ott.cibntv.net") ||
+            lower.contains("bestv.com.cn") || lower.contains("kankanlive.com") ||
+            lower.contains("juyun.tv") || lower.contains("bread-tv.com") -> 1
+            // 已知被屏蔽的境外 IPTV 服务器（北美）- 参考 APK 中被移动网络屏蔽的 IP 段
             lower.startsWith("http://69.") || lower.startsWith("http://74.91.") ||
             lower.startsWith("http://198.204.") || lower.startsWith("http://192.151.") ||
             lower.startsWith("http://23.") || lower.startsWith("http://45.") ||
@@ -228,16 +236,23 @@ object M3UParser {
 
     /**
      * 智能分类频道到标准分组
+     *
+     * 增强版：更好地处理 iptv-org cn.m3u 中的频道名称
+     * - 支持 "CCTV-1 (1080p)" 等带清晰度标记的名称
+     * - 支持 "BRTV 北京卫视" 等带前缀的名称
+     * - 支持更多国际频道识别
      */
     private fun classifyGroup(originalGroup: String, name: String): String {
         // 优先使用原始分组（如果匹配标准分类）
         val g = originalGroup.lowercase()
         when {
-            g.contains("cctv") || g.contains("央视") || g.contains("中央") -> return Channel.GROUP_CCTV
+            g.contains("cctv") || g.contains("央视") || g.contains("中央") ||
+            g.contains("news") && g.contains("cctv") -> return Channel.GROUP_CCTV
             g.contains("卫视") || g.contains("satellite") -> return Channel.GROUP_SATELLITE
             g.contains("港") || g.contains("澳") || g.contains("台") || g.contains("hk") ||
             g.contains("macao") || g.contains("taiwan") -> return Channel.GROUP_HK_MACAO_TW
             g.contains("国际") || g.contains("international") || g.contains("world") -> return Channel.GROUP_INTERNATIONAL
+            g.contains("地方") || g.contains("local") || g.contains("provincial") -> return Channel.GROUP_LOCAL
         }
 
         // 根据频道名智能判断
@@ -246,11 +261,19 @@ object M3UParser {
             name.contains("卫视") -> Channel.GROUP_SATELLITE
             name.contains("香港", true) || name.contains("TVB", true) || name.contains("澳门") ||
             name.contains("台湾") || name.contains("中视") || name.contains("华视") ||
-            name.contains("民视") || name.contains("龙华") -> Channel.GROUP_HK_MACAO_TW
+            name.contains("民视") || name.contains("龙华") || name.contains("凤凰") ||
+            name.contains("HK", true) && name.contains("TV") -> Channel.GROUP_HK_MACAO_TW
             name.contains("NHK", true) || name.contains("BBC", true) || name.contains("CNN", true) ||
             name.contains("ARIRANG", true) || name.contains("DW", true) || name.contains("France", true) ||
             name.contains("RT", true) || name.contains("Sky", true) || name.contains("FOX", true) ||
-            name.contains("Al Jazeera", true) -> Channel.GROUP_INTERNATIONAL
+            name.contains("Al Jazeera", true) || name.contains("CGTN", true) ||
+            name.contains("KBS", true) || name.contains("MBC", true) ||
+            name.contains("Euro", true) || name.contains("ABC", true) ||
+            name.contains("NBN", true) || name.contains("ABN", true) -> Channel.GROUP_INTERNATIONAL
+            // 宗教/少儿/音乐等归类为"其他"
+            name.contains("Religious", true) || name.contains("宗教") ||
+            name.contains("Kids", true) || name.contains("Cartoon", true) ||
+            name.contains("Music", true) || name.contains("Bread", true) -> Channel.GROUP_OTHER
             else -> Channel.GROUP_LOCAL
         }
     }

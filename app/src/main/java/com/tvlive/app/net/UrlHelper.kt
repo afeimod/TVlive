@@ -232,7 +232,7 @@ object UrlHelper {
     }
 
     /**
-     * 为流媒体播放 URL 生成备选 URL 列表（关键修复）
+     * 为流媒体播放 URL 生成备选 URL 列表（关键修复 + ISP 感知）
      *
      * 这是针对直播源被中国移动网络屏蔽的核心解决方案：
      *
@@ -240,6 +240,10 @@ object UrlHelper {
      * 2. 被封锁的境外 CDN → 通过国内代理前缀绕过
      * 3. HTTPS 流 → 尝试 HTTP 降级（移动网络对部分 HTTPS 流做 SNI 阻断）
      * 4. 调用方提供的 backupUrls → 一并加入候选列表
+     * 5. **ISP 感知**（参考 APK 的运营商标签策略）：
+     *    - 中国移动：最激进的反屏蔽（更多代理/镜像/IPv6）
+     *    - 中国电信/联通：中等策略（境外 CDN 可能可直连）
+     *    - 未知：按移动策略处理（确保可用性）
      *
      * @param originalUrl 频道原始流 URL
      * @param backupUrls M3U 解析出的备用 URL 列表（可为空）
@@ -248,6 +252,7 @@ object UrlHelper {
     fun getStreamAlternativeUrls(originalUrl: String, backupUrls: List<String> = emptyList()): List<String> {
         val urls = mutableListOf<String>()
         val seen = mutableSetOf<String>()
+        val isCMCC = ISPDetector.isCMCCOrUnknown()
 
         fun addCandidate(url: String) {
             if (url.isNotBlank() && seen.add(url.lowercase())) {
@@ -298,6 +303,23 @@ object UrlHelper {
             addCandidate("https://gh-proxy.com/$originalUrl")
             addCandidate("https://ghproxy.net/$originalUrl")
             addCandidate("https://corsproxy.io/?url=$originalUrl")
+            // ISP 感知：移动网络下增加更多代理选项（参考 APK 的多源策略）
+            if (isCMCC) {
+                addCandidate("https://ghproxy.cc/$originalUrl")
+                addCandidate("https://mirror.ghproxy.com/$originalUrl")
+            }
+        }
+
+        // ==================== 已知被移动网络屏蔽的境外 IP → 替换为国内镜像 ====================
+        // 参考 APK 的 ISP 标签过滤策略：移动网络下不使用境外 IP 的流
+        // iptv-org 的 cn.m3u 中大量频道使用北美服务器（69.x, 74.91.x, 198.204.x 等），
+        // 这些在移动网络下必定被屏蔽，需要替换为国内可访问的替代源
+        if (isCMCC) {
+            val blockedIpAlt = getAlternativeForBlockedIp(originalUrl)
+            if (blockedIpAlt != null) {
+                Log.d(TAG, "CMCC network: replacing blocked IP URL with alternative: $blockedIpAlt")
+                addCandidate(blockedIpAlt)
+            }
         }
 
         // ==================== HTTPS 流 → HTTP 降级（仅当不是 GitHub 等强制 HTTPS 域名） ====================
@@ -305,8 +327,11 @@ object UrlHelper {
             !isBlockedDomain(originalUrl) &&
             !isBlockedStreamDomain(originalUrl)) {
             // 部分移动网络对特定 HTTPS 流做 SNI 阻断，HTTP 可绕过
-            val httpVersion = "http://" + originalUrl.substring(8)
-            addCandidate(httpVersion)
+            // ISP 感知：移动网络下始终尝试 HTTP 降级；电信/联通下仅对 CDN 域名尝试
+            if (isCMCC || isBlockedStreamDomain(originalUrl)) {
+                val httpVersion = "http://" + originalUrl.substring(8)
+                addCandidate(httpVersion)
+            }
         }
 
         // ==================== M3U 提供的备用 URL ====================
@@ -321,10 +346,81 @@ object UrlHelper {
             }
         }
 
+        // ==================== ISP 感知：URL 重新排序 ====================
+        // 中国移动网络下：CMCC IPv6 URL > 国内域名 > 其他 > 已知屏蔽境外 IP
+        // 电信/联通下：原始 URL 优先（封锁较轻）
+        if (isCMCC && urls.size > 1) {
+            val sorted = urls.sortedWith(compareBy { ispAwareUrlRank(it) })
+            urls.clear()
+            seen.clear()
+            sorted.forEach { addCandidate(it) }
+        }
+
         // ==================== 原始 URL 始终包含（作为兜底） ====================
         addCandidate(originalUrl)
 
-        Log.d(TAG, "Generated ${urls.size} stream alternatives for: $originalUrl")
+        Log.d(TAG, "Generated ${urls.size} stream alternatives for: $originalUrl (ISP: ${ISPDetector.currentISP.label})")
         return urls
+    }
+
+    /**
+     * ISP 感知的 URL 可达性排序
+     *
+     * 参考 APK 的 Channel.java URL 过滤策略：
+     * - 中国移动网络下，已知被屏蔽的境外 IP 优先级最低
+     * - 移动 IPTV IPv6 地址优先级最高（移动网络内必达）
+     *
+     * @return 排序值，越小优先级越高
+     */
+    private fun ispAwareUrlRank(url: String): Int {
+        val lower = url.lowercase()
+        return when {
+            // 中国移动 IPTV IPv6 - 最高优先级
+            lower.contains("2409:8087") -> 0
+            // 移动 IPTV IPv4 镜像
+            lower.contains("39.135.") || lower.contains("39.134.") ||
+            lower.contains("gslbserv.itv.cmcc.cn") -> 1
+            // 国内域名
+            lower.contains(".cn/") || lower.contains(".cn:") || lower.endsWith(".cn") ||
+            lower.contains("chinamobile.com") || lower.contains("cctv.com") ||
+            lower.contains("pdtvhd.com") -> 2
+            // 代理/镜像 URL（通过代理访问境外内容）
+            lower.contains("gh-proxy.com") || lower.contains("ghproxy.net") ||
+            lower.contains("ghproxy.cc") || lower.contains("corsproxy.io") ||
+            lower.contains("gitmirror.com") || lower.contains("kkgithub.com") -> 3
+            // 国内 IP 段
+            lower.startsWith("http://39.") || lower.startsWith("http://112.") ||
+            lower.startsWith("http://117.") || lower.startsWith("http://118.") ||
+            lower.startsWith("http://121.") || lower.startsWith("http://122.") ||
+            lower.startsWith("http://123.") || lower.startsWith("http://183.") ||
+            lower.startsWith("http://222.") || lower.startsWith("http://223.") -> 4
+            // 已知被屏蔽的境外 IP - 最低优先级
+            lower.startsWith("http://69.") || lower.startsWith("http://74.91.") ||
+            lower.startsWith("http://198.204.") || lower.startsWith("http://192.151.") ||
+            lower.startsWith("http://23.") || lower.startsWith("http://45.") ||
+            lower.startsWith("http://104.") || lower.startsWith("http://162.") -> 7
+            // 其他未分类
+            else -> 5
+        }
+    }
+
+    /**
+     * 为已知被中国移动网络屏蔽的境外 IP URL 生成替代 URL
+     *
+     * iptv-org 的 cn.m3u 中许多 CCTV/卫视频道使用北美服务器（如 69.30.245.50、74.91.26.218:82），
+     * 这些在中国移动网络下 100% 被屏蔽。
+     *
+     * 参考电视直播应用的策略：服务端为不同 ISP 提供不同 CDN URL。
+     * 我们无法控制服务端，但可以尝试将境外 IP 替换为已知的国内替代 CDN。
+     *
+     * 当前实现：返回 null（暂无替代源映射表）。
+     * 未来可扩展：从 fallback_channels.m3u 中提取同频道名的国内 URL 作为替代。
+     */
+    private fun getAlternativeForBlockedIp(url: String): String? {
+        // 当前暂不实现替代 IP 映射，因为：
+        // 1. 需要维护一个完整的境外IP→国内IP映射表
+        // 2. M3UParser 的同名频道合并 + URL 排序已经能处理大部分情况
+        // 3. fallback_channels.m3u 中的国内 IPv6 URL 已经作为备选
+        return null
     }
 }

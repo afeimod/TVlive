@@ -9,6 +9,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -17,6 +18,7 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import android.util.Log
 import com.tvlive.app.net.HttpClientProvider
+import com.tvlive.app.net.ISPDetector
 import com.tvlive.app.net.UrlHelper
 
 /**
@@ -57,6 +59,9 @@ class TvPlayerManager(private val context: Context) {
     /** 当前会话内已知失败的 URL（避免重复尝试） */
     private val failedUrls = mutableSetOf<String>()
 
+    /** 当前频道 URL 对应的自定义 HTTP 请求头（参考 APK 的 ikkHeaders:// 协议） */
+    private var customHeaders: Map<String, String> = emptyMap()
+
     var onError: ((String) -> Unit)? = null
     var onLoading: (() -> Unit)? = null
     var onReady: (() -> Unit)? = null
@@ -76,10 +81,7 @@ class TvPlayerManager(private val context: Context) {
         .build()
 
     fun createPlayer(): ExoPlayer {
-        val dataSourceFactory = DefaultDataSource.Factory(
-            context,
-            OkHttpDataSource.Factory(okHttpClient).setUserAgent(HttpClientProvider.USER_AGENT)
-        )
+        val dataSourceFactory = createDataSourceFactory()
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
         // 5G 网络优化：使用 LoadControl 加快直播起播速度
@@ -208,8 +210,17 @@ class TvPlayerManager(private val context: Context) {
         Log.d(TAG, "playSingleUrl: $url")
         val player = player ?: createPlayer().also { player = it }
 
+        // 解析自定义 Headers（参考 APK 的 ikkHeaders:// / kooHeaders:// 协议）
+        // 支持 URL 格式：Headers://?url=ENCODED_URL&Referer=ENCODED_REFERER&User-Agent=ENCODED_UA
+        val (actualUrl, headers) = parseCustomHeaders(url)
+        customHeaders = headers
+
+        if (headers.isNotEmpty()) {
+            Log.d(TAG, "Custom headers for stream: $headers")
+        }
+
         val mediaItem = MediaItem.Builder()
-            .setUri(Uri.parse(url))
+            .setUri(Uri.parse(actualUrl))
             .setLiveConfiguration(
                 MediaItem.LiveConfiguration.Builder()
                     .setMaxPlaybackSpeed(1.02f)
@@ -217,16 +228,102 @@ class TvPlayerManager(private val context: Context) {
             )
             .build()
 
-        val mediaSource = createMediaSource(url, mediaItem)
+        // 如果有自定义 Headers，重建 DataSourceFactory 以注入这些头
+        val mediaSource = if (headers.isNotEmpty()) {
+            createMediaSourceWithHeaders(actualUrl, mediaItem, headers)
+        } else {
+            createMediaSource(actualUrl, mediaItem)
+        }
+
         player.setMediaSource(mediaSource)
         player.prepare()
     }
 
+    /**
+     * 解析自定义 Headers URL（参考 APK 的 ikkHeaders:// / kooHeaders:// 协议）
+     *
+     * 支持格式：
+     * - Headers://?url=ENCODED_URL&Referer=xxx&User-Agent=xxx
+     * - ikkHeaders://?url=ENCODED_URL&key=value
+     * - kooHeaders://?url=ENCODED_URL&key=value
+     *
+     * 如果不是自定义 Headers URL，返回原始 URL 和空 Headers
+     */
+    private fun parseCustomHeaders(url: String): Pair<String, Map<String, String>> {
+        val lower = url.lowercase()
+        if (!lower.startsWith("headers://") && !lower.startsWith("ikkheaders://") && !lower.startsWith("kooheaders://")) {
+            return Pair(url, emptyMap())
+        }
+
+        val headers = mutableMapOf<String, String>()
+        var actualUrl = url
+
+        try {
+            // 去掉协议前缀
+            val queryPart = url.substringAfter("://", "")
+            if (queryPart.startsWith("?")) {
+                val params = queryPart.substring(1).split("&")
+                for (param in params) {
+                    val eqIdx = param.indexOf("=")
+                    if (eqIdx > 0) {
+                        val key = param.substring(0, eqIdx)
+                        val value = java.net.URLDecoder.decode(param.substring(eqIdx + 1), "UTF-8")
+                        if (key.equals("url", ignoreCase = true)) {
+                            actualUrl = value
+                        } else {
+                            headers[key] = value
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse custom headers URL: $url", e)
+        }
+
+        return Pair(actualUrl, headers)
+    }
+
+    /**
+     * 创建带自定义 Headers 的 DataSource.Factory
+     *
+     * 通过 OkHttpDataSource.Factory 的 setDefaultRequestProperties 注入自定义头
+     */
+    private fun createDataSourceFactory(headers: Map<String, String> = emptyMap()): DefaultDataSource.Factory {
+        val okHttpFactory = OkHttpDataSource.Factory(okHttpClient)
+            .setUserAgent(HttpClientProvider.DESKTOP_USER_AGENT)
+
+        if (headers.isNotEmpty()) {
+            okHttpFactory.setDefaultRequestProperties(headers)
+        }
+
+        return DefaultDataSource.Factory(context, okHttpFactory)
+    }
+
+    /**
+     * 创建带自定义 Headers 的 MediaSource（用于需要特殊请求头的流）
+     */
+    private fun createMediaSourceWithHeaders(url: String, mediaItem: MediaItem, headers: Map<String, String>): MediaSource {
+        val dataSourceFactory = createDataSourceFactory(headers)
+
+        val DATA_TYPE_MANIFEST = 1
+        val loadErrorPolicy = object : DefaultLoadErrorHandlingPolicy() {
+            override fun getMinimumLoadableRetryCount(loadType: Int): Int =
+                if (loadType == DATA_TYPE_MANIFEST) 5 else 3
+        }
+
+        return if (url.contains(".m3u8", ignoreCase = true)) {
+            HlsMediaSource.Factory(dataSourceFactory)
+                .setLoadErrorHandlingPolicy(loadErrorPolicy)
+                .createMediaSource(mediaItem)
+        } else {
+            DefaultMediaSourceFactory(dataSourceFactory)
+                .setLoadErrorHandlingPolicy(loadErrorPolicy)
+                .createMediaSource(mediaItem)
+        }
+    }
+
     private fun createMediaSource(url: String, mediaItem: MediaItem): MediaSource {
-        val dataSourceFactory = DefaultDataSource.Factory(
-            context,
-            OkHttpDataSource.Factory(okHttpClient).setUserAgent(HttpClientProvider.USER_AGENT)
-        )
+        val dataSourceFactory = createDataSourceFactory()
 
         // 5G 中国移动网络优化：自定义 LoadErrorHandlingPolicy
         // getMinimumLoadableRetryCount(loadType: Int) 接收的 loadType 取值：
@@ -236,6 +333,11 @@ class TvPlayerManager(private val context: Context) {
         // 策略：manifest 多重试（直播 playlist 周期性重载，5G 瞬时丢包时给更多容错）；
         //       media 少重试（快速失败后由 handlePlayerError 切换到下一个镜像 URL）。
         // 失败后由 handlePlayerError 进行 URL 级别切换。
+        //
+        // 参考电视直播应用的 FFmpeg 配置：
+        // - reconnect=3 (自动重连 3 次)
+        // - dns_cache_clear=1 (清除 DNS 缓存)
+        // ExoPlayer 通过 LoadErrorHandlingPolicy 实现类似功能
         val DATA_TYPE_MANIFEST = 1
         val loadErrorPolicy = object : DefaultLoadErrorHandlingPolicy() {
             override fun getMinimumLoadableRetryCount(loadType: Int): Int =

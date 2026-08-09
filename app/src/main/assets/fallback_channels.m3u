@@ -1,21 +1,28 @@
 #EXTM3U
 # ──────────────────────────────────────────────────────────────────────────
-# 内置备用频道 - 中国移动 5G 网络专用版（v3 - 真实可用 URL）
+# 内置备用频道 - 中国移动 5G 网络专用版（v4 - 扩充频道 + 多线路）
 #
-# 重要变更（v3）：
+# 重要变更（v4）：
 # - 所有 URL 均来自 yuanzl77/IPTV 项目（github.com/yuanzl77/IPTV），
 #   该项目专门收集中国移动 IPTV 网络内可用的直播流，每天更新
 # - 这些 URL 全部使用中国移动 IPTV IPv6 CDN（[2409:8087:...]:80/6610），
 #   在中国移动 5G/4G/宽带网络内可以直接访问
-# - 每个频道提供 3 个不同的线路（不同 IPv6 节点），由播放器自动降级
+# - 每个频道提供 2-3 个不同的线路（不同 IPv6 节点），由播放器自动降级
 # - 注意：这些 URL 只能在中国移动网络内访问，从其他网络（电信/联通/海外）
 #   会超时失败 - 但这正是用户当前场景所需
+# - 新增：上海东方、天津、贵州、甘肃、云南、广西、吉林、内蒙等卫视频道
 #
 # 多 URL 格式说明：
 # - 每行使用 | 分隔多个备选 URL
 # - M3UParser.parse 会自动将其解析为 backupUrls 字段
 # - TvPlayerManager 会按顺序尝试每个 URL，失败自动切换下一个
 # - 单 URL 失败 2 次后切换，所有 URL 失败才报错
+#
+# 反屏蔽策略参考（电视直播应用 APK 分析）：
+# - APK 使用 ISP 标签路由：$Y=移动, $D=电信, $L=联通
+# - 本文件中的 IPv6 URL 在移动网络内天然可达（无需 ISP 标签过滤）
+# - 播放时 UrlHelper 会自动为 IPv6 URL 生成 IPv4 备选（39.135.34.150 等）
+# - HttpClientProvider 的拦截器会伪装桌面浏览器 UA + 注入 Referer
 # ──────────────────────────────────────────────────────────────────────────
 
 # ==================== 央视频道（CCTV） ====================
@@ -97,6 +104,32 @@ http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225699/2/index.
 http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225705/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226202/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/yinhe/88888888/224/3221226202/index.m3u8
 #EXTINF:-1 tvg-name="贵州卫视" group-title="卫视",贵州卫视
 http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225702/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226353/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/yinhe/88888888/224/3221226353/index.m3u8
+#EXTINF:-1 tvg-name="云南卫视" group-title="卫视",云南卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225698/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226355/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/yinhe/88888888/224/3221226355/index.m3u8
+#EXTINF:-1 tvg-name="广西卫视" group-title="卫视",广西卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225688/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226220/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/yinhe/88888888/224/3221226220/index.m3u8
+#EXTINF:-1 tvg-name="吉林卫视" group-title="卫视",吉林卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225678/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226254/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/yinhe/88888888/224/3221226254/index.m3u8
+#EXTINF:-1 tvg-name="甘肃卫视" group-title="卫视",甘肃卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225682/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226279/index.m3u8
+#EXTINF:-1 tvg-name="内蒙古卫视" group-title="卫视",内蒙古卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225674/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226223/index.m3u8
+#EXTINF:-1 tvg-name="宁夏卫视" group-title="卫视",宁夏卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225680/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226272/index.m3u8
+#EXTINF:-1 tvg-name="新疆卫视" group-title="卫视",新疆卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225685/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226282/index.m3u8
+#EXTINF:-1 tvg-name="西藏卫视" group-title="卫视",西藏卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225684/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226281/index.m3u8
+#EXTINF:-1 tvg-name="青海卫视" group-title="卫视",青海卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225683/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226280/index.m3u8
+#EXTINF:-1 tvg-name="海南卫视" group-title="卫视",海南卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225696/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226207/index.m3u8
+#EXTINF:-1 tvg-name="山西卫视" group-title="卫视",山西卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225679/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226236/index.m3u8
+#EXTINF:-1 tvg-name="陕西卫视" group-title="卫视",陕西卫视
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225675/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226226/index.m3u8
+#EXTINF:-1 tvg-name="湖南金鹰卡通" group-title="卫视",湖南金鹰卡通
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225706/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226306/index.m3u8
 
 # ==================== 港澳台频道 ====================
 #EXTINF:-1 tvg-name="凤凰中文台" group-title="港澳台",凤凰卫视中文台
@@ -105,3 +138,9 @@ http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225709/2/index.
 http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225710/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226145/index.m3u8
 #EXTINF:-1 tvg-name="凤凰香港台" group-title="港澳台",凤凰卫视香港台
 http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225711/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226146/index.m3u8
+
+# ==================== CGTN 国际频道 ====================
+#EXTINF:-1 tvg-name="CGTN" group-title="国际",CGTN 英语
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225644/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226004/index.m3u8
+#EXTINF:-1 tvg-name="CGTN法语" group-title="国际",CGTN 法语
+http://[2409:8087:3869:8021:1001::e5]:6610/PLTV/88888888/224/3221225652/2/index.m3u8|http://[2409:8087:1a01:df::4077]:80/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226008/index.m3u8

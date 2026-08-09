@@ -20,7 +20,7 @@ import com.tvlive.app.data.model.Source
 object DefaultSources {
 
     /** 源版本号 - 版本变化时会重新初始化默认源 */
-    const val VERSION = 5
+    const val VERSION = 6
 
     val sources = listOf(
         // ==================== 唯一默认启用源 ====================
