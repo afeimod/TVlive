@@ -149,7 +149,7 @@ object ISPDetector {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         // 服务 1：pconline IP 归属地
-        val job1 = scope.async {
+        val job1 = scope.async<Unit> {
             try {
                 val request = Request.Builder()
                     .url("http://whois.pconline.com.cn/ipJson.jsp")
@@ -175,7 +175,7 @@ object ISPDetector {
         }
 
         // 服务 2：ip-api.com（海外服务，作为备用）
-        val job2 = scope.async {
+        val job2 = scope.async<Unit> {
             try {
                 val request = Request.Builder()
                     .url("http://ip-api.com/json/?lang=zh-CN")
