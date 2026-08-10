@@ -16,6 +16,7 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import android.util.Log
 import com.tvlive.app.data.model.Channel
 import com.tvlive.app.data.model.ResolvedUrl
@@ -596,7 +597,7 @@ class TvPlayerManager(private val context: Context) {
             override fun getMinimumLoadableRetryCount(loadType: Int): Int =
                 if (loadType == DATA_TYPE_MANIFEST) 6 else 3
 
-            override fun getRetryDelayMsFor(loadErrorInfo: DefaultLoadErrorHandlingPolicy.LoadErrorInfo): Long {
+            override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
                 // ★ 重试延迟递增：1s, 2s, 3s...（对应APK: 1s后重试）
                 return (loadErrorInfo.errorCount * 1000L).coerceIn(1000L, 5000L)
             }
