@@ -31,6 +31,7 @@
 | 源名称 | 地址 | 说明 |
 |--------|------|------|
 | iptv-org 中国频道 | `https://iptv-org.github.io/iptv/countries/cn.m3u` | GitHub 最大公开 IPTV 集合，每日自动检测 |
+| 咪咕视频直播 |  |
 | iptv-org 全球频道 | `https://iptv-org.github.io/iptv/index.m3u` | 全球数千个免费频道 |
 | zbds 每日更新源 | `https://live.zbds.top/tv/iptv4.m3u` | 国内直连，每6小时更新 |
 | joevess 央视卫视源 | `https://raw.githubusercontent.com/joevess/IPTV/main/home.m3u8` | 央视+卫视+地方台 |
