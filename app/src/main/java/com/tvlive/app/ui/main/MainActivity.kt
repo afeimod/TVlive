@@ -54,7 +54,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var overlayAdapter: ChannelOverlayAdapter
     private lateinit var gestureDetector: GestureDetector
 
-    private var channels: List<Channel> = emptyList()
+    private var allChannels: List<Channel> = emptyList()   // 全量频道（所有分组）
+    private var channels: List<Channel> = emptyList()      // 当前分组过滤后的频道
+    private var channelGroups: List<String> = emptyList()  // 分组名称列表（按APK顺序）
+    private var currentGroupIndex = 0                      // 当前选中的分组索引
     private var currentIndex = 0
     private var hasAutoPlayed = false
     private var isRefreshingSources = false
@@ -152,9 +155,9 @@ class MainActivity : AppCompatActivity() {
     /** 从数据库加载已缓存的频道并自动播放 CCTV-1 */
     private fun loadCachedChannelsAndPlay() {
         lifecycleScope.launch {
-            channels = viewModel.allChannels.first()
-            if (channels.isNotEmpty()) {
-                overlayAdapter.submit(channels)
+            val list = viewModel.allChannels.first()
+            if (list.isNotEmpty()) {
+                updateChannelData(list)
                 autoPlayCctv1()
             } else {
                 // 缓存为空，重新刷新
@@ -171,8 +174,7 @@ class MainActivity : AppCompatActivity() {
                 launch {
                     viewModel.allChannels.collect { list ->
                         if (list.isNotEmpty()) {
-                            channels = list
-                            overlayAdapter.submit(channels)
+                            updateChannelData(list)
                             if (!hasAutoPlayed) {
                                 autoPlayCctv1()
                             }
@@ -215,9 +217,9 @@ class MainActivity : AppCompatActivity() {
                 if (state.result.totalChannels > 0 && !hasAutoPlayed) {
                     // 重新加载频道列表
                     lifecycleScope.launch {
-                        channels = viewModel.allChannels.first()
-                        if (channels.isNotEmpty()) {
-                            overlayAdapter.submit(channels)
+                        val list = viewModel.allChannels.first()
+                        if (list.isNotEmpty()) {
+                            updateChannelData(list)
                             autoPlayCctv1()
                         }
                     }
@@ -231,6 +233,142 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    // ==================== 频道数据管理（分组Tab + 分组过滤） ====================
+
+    /**
+     * ★★★ 统一更新频道数据（按APK分类体系）★★★
+     *
+     * 流程：
+     * 1. 保存全量频道到 allChannels
+     * 2. 按ctype生成分组列表（央视频道 → 卫视频道 → 购物频道 → 超清频道 → 各省份）
+     * 3. 构建分组Tab UI
+     * 4. 过滤出当前分组的频道并更新列表
+     */
+    private fun updateChannelData(list: List<Channel>) {
+        allChannels = list
+
+        // 按APK ctype生成分组列表（去重+排序）
+        val groupOrder = mapOf(
+            Channel.GROUP_CCTV to 0,
+            Channel.GROUP_SATELLITE to 1,
+            Channel.GROUP_SHOPPING to 2,
+            Channel.GROUP_UHD to 3,
+            Channel.GROUP_LOCAL to 4,
+            Channel.GROUP_HK_MACAO_TW to 90,
+            Channel.GROUP_INTERNATIONAL to 91,
+            Channel.GROUP_OTHER to 95
+        )
+
+        channelGroups = allChannels.map { it.group }.distinct().sortedBy { group ->
+            groupOrder[group] ?: (5 + (group.firstOrNull()?.code?.rem(80) ?: 0))
+        }
+
+        // 如果当前分组不在新分组列表中，重置到第一个分组
+        val currentGroup = channelGroups.getOrNull(currentGroupIndex)
+        if (currentGroup == null || allChannels.none { it.group == currentGroup }) {
+            currentGroupIndex = 0
+        }
+
+        // 构建分组Tab UI
+        buildGroupTabs()
+
+        // 过滤当前分组的频道
+        filterCurrentGroup()
+    }
+
+    /**
+     * ★★★ 构建分组Tab（完全按APK的type数组顺序）★★★
+     *
+     * APK Tab: 央视频道 | 卫视频道 | 购物频道 | 超清频道 | 广东 | 湖南 | ...
+     * 每个Tab是一个TextView，选中时高亮
+     */
+    private fun buildGroupTabs() {
+        val container = binding.groupTabContainer
+        container.removeAllViews()
+
+        val dp8 = (8 * resources.displayMetrics.density).toInt()
+        val dp4 = (4 * resources.displayMetrics.density).toInt()
+        val dp14 = (14 * resources.displayMetrics.density).toInt()
+
+        channelGroups.forEachIndexed { index, groupName ->
+            val tab = android.widget.TextView(this).apply {
+                text = groupName
+                textSize = 13f
+                setTextColor(android.graphics.Color.WHITE)
+                setPadding(dp8, dp4, dp8, dp4)
+                isClickable = true
+                isFocusable = true
+
+                // 选中样式
+                if (index == currentGroupIndex) {
+                    setBackgroundResource(android.R.color.holo_orange_dark)
+                    setTextColor(android.graphics.Color.WHITE)
+                    setTypeface(null, android.graphics.Typeface.BOLD)
+                } else {
+                    setBackgroundResource(android.R.color.transparent)
+                    setTextColor(android.graphics.Color.LTGRAY)
+                    setTypeface(null, android.graphics.Typeface.NORMAL)
+                }
+
+                setOnClickListener { selectGroup(index) }
+
+                setOnFocusChangeListener { _, hasFocus ->
+                    if (hasFocus && index != currentGroupIndex) {
+                        setTextColor(android.graphics.Color.YELLOW)
+                    } else if (index != currentGroupIndex) {
+                        setTextColor(android.graphics.Color.LTGRAY)
+                    }
+                }
+            }
+            container.addView(tab)
+
+            // Tab间距
+            if (index < channelGroups.size - 1) {
+                val spacer = android.view.View(this).apply {
+                    layoutParams = android.widget.LinearLayout.LayoutParams(dp14, 1)
+                }
+                container.addView(spacer)
+            }
+        }
+    }
+
+    /** 选中指定分组Tab，过滤并显示该分组的频道 */
+    private fun selectGroup(index: Int) {
+        if (index < 0 || index >= channelGroups.size) return
+        currentGroupIndex = index
+        buildGroupTabs()  // 刷新Tab选中样式
+        filterCurrentGroup()
+
+        // 滚动Tab到选中位置可见
+        val tabView = binding.groupTabContainer.getChildAt(index * 2)  // 每个tab后面有spacer
+        if (tabView != null) {
+            binding.groupTabScroller.smoothScrollTo(tabView.left, 0)
+        }
+    }
+
+    /** 当前正在播放的频道ID（用于分组切换时定位） */
+    private var playingChannelId: Long = -1
+
+    /** 过滤当前分组的频道并更新列表 */
+    private fun filterCurrentGroup() {
+        val groupName = channelGroups.getOrNull(currentGroupIndex) ?: return
+        channels = allChannels.filter { it.group == groupName }
+
+        // 频道号按分组内顺序重排
+        channels = channels.mapIndexed { i, ch -> ch.copy(channelNumber = i + 1) }
+
+        overlayAdapter.submit(channels)
+
+        // 如果当前正在播放的频道在此分组中，高亮它
+        if (playingChannelId >= 0) {
+            val idx = channels.indexOfFirst { it.id == playingChannelId }
+            currentIndex = if (idx >= 0) idx else 0
+        } else {
+            currentIndex = 0
+        }
+        overlayAdapter.setCurrentIndex(currentIndex)
     }
 
     // ==================== 频道列表覆盖层 ====================
@@ -398,26 +536,37 @@ class MainActivity : AppCompatActivity() {
     /**
      * 自动播放 CCTV-1
      * 在频道列表中查找 CCTV-1 综合，找不到则播放第一个央视频道
+     * ★★★ 先切换到央视频道分组，再查找 ★★★
      */
     private fun autoPlayCctv1() {
-        if (channels.isEmpty()) return
+        if (allChannels.isEmpty()) return
         hasAutoPlayed = true
 
-        val cctv1 = channels.find {
+        // 先找到CCTV-1在哪个分组
+        val cctv1 = allChannels.find {
             it.name.contains("CCTV-1", true) ||
             it.name.contains("CCTV1", true) ||
             it.name.contains("央视一套", true) ||
             it.name.contains("中央一套", true)
-        } ?: channels.find {
+        } ?: allChannels.find {
             it.group == Channel.GROUP_CCTV
-        } ?: channels.first()
+        } ?: allChannels.first()
 
-        currentIndex = channels.indexOf(cctv1)
+        // 切换到CCTV-1所在分组
+        val targetGroupIndex = channelGroups.indexOf(cctv1.group)
+        if (targetGroupIndex >= 0) {
+            currentGroupIndex = targetGroupIndex
+            buildGroupTabs()
+            filterCurrentGroup()
+        }
+
+        currentIndex = channels.indexOfFirst { it.id == cctv1.id }.coerceAtLeast(0)
         playCurrent()
     }
 
     private fun playCurrent() {
         val channel = channels.getOrNull(currentIndex) ?: return
+        playingChannelId = channel.id
         updateChannelInfo(channel)
         overlayAdapter.setCurrentIndex(currentIndex)
 
@@ -444,9 +593,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * ★★★ 切换频道（按APK逻辑：分组内循环，到边界自动切换到下一分组）★★★
+     *
+     * APK行为：到达分组末尾 → 进入下一个分组第一个频道
+     */
     private fun switchChannel(delta: Int) {
-        if (channels.isEmpty()) return
-        currentIndex = (currentIndex + delta + channels.size) % channels.size
+        if (allChannels.isEmpty()) return
+
+        val newIndex = currentIndex + delta
+        if (newIndex in channels.indices) {
+            // 分组内切换
+            currentIndex = newIndex
+        } else {
+            // 到达分组边界 → 切换到下一/上一分组
+            val nextGroupIndex = currentGroupIndex + delta
+            if (nextGroupIndex in channelGroups.indices) {
+                selectGroup(nextGroupIndex)
+                currentIndex = if (delta > 0) 0 else (channels.size - 1).coerceAtLeast(0)
+            } else {
+                // 循环：最后一组 → 第一组，反之亦然
+                val wrapGroup = if (delta > 0) 0 else channelGroups.size - 1
+                selectGroup(wrapGroup)
+                currentIndex = if (delta > 0) 0 else (channels.size - 1).coerceAtLeast(0)
+            }
+        }
         playCurrent()
     }
 
@@ -532,6 +703,9 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             TvLiveApp.instance.repository.setFavorite(channel, newFav)
         }
+        allChannels = allChannels.map { ch ->
+            if (ch.id == channel.id) ch.copy(favorite = newFav) else ch
+        }
         channels = channels.mapIndexed { i, ch ->
             if (i == currentIndex) ch.copy(favorite = newFav) else ch
         }
@@ -615,9 +789,27 @@ class MainActivity : AppCompatActivity() {
                         return true
                     }
                 }
-                // 左右键: 显示频道列表
-                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (!isChannelListVisible && !isSettingsPanelVisible) {
+                // ★★★ 左右键: 切换分组Tab（频道列表打开时）或显示频道列表 ★★★
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    if (isChannelListVisible) {
+                        // 频道列表打开时：左键切换到上一分组
+                        if (currentGroupIndex > 0) {
+                            selectGroup(currentGroupIndex - 1)
+                        }
+                        return true
+                    } else if (!isSettingsPanelVisible) {
+                        showChannelList()
+                        return true
+                    }
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (isChannelListVisible) {
+                        // 频道列表打开时：右键切换到下一分组
+                        if (currentGroupIndex < channelGroups.size - 1) {
+                            selectGroup(currentGroupIndex + 1)
+                        }
+                        return true
+                    } else if (!isSettingsPanelVisible) {
                         showChannelList()
                         return true
                     }

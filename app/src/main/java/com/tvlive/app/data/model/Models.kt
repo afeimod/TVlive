@@ -153,15 +153,57 @@ data class Channel(
     }
 
     companion object {
-        const val GROUP_CCTV = "央视"
-        const val GROUP_SATELLITE = "卫视"
-        const val GROUP_LOCAL = "地方"
+        const val GROUP_CCTV = "央视频道"
+        const val GROUP_SATELLITE = "卫视频道"
+        const val GROUP_SHOPPING = "购物频道"
+        const val GROUP_UHD = "超清频道"
+        const val GROUP_LOCAL = "地方频道"
+        // 地方子分组（省份）由ctype动态生成，不再硬编码
         const val GROUP_HK_MACAO_TW = "港澳台"
         const val GROUP_INTERNATIONAL = "国际"
         const val GROUP_OTHER = "其他"
+
+        /** 占位符/导视频道名称（不是真正可播放的频道，需过滤） */
+        val FILLER_NAMES = setOf(
+            "导视精选", "热门推荐", "好物推荐", "居家好物",
+            "导视", "推荐", "精选"
+        )
+
+        /** 判断是否为占位符频道 */
+        fun isFillerChannel(name: String): Boolean {
+            return FILLER_NAMES.any { name.contains(it) }
+        }
     }
 
-    /** 智能分类：根据频道名判断所属分组 */
+    /**
+     * 按APK ctype分类（ctype是APK的一级分组键）
+     *
+     * APK分类体系（完全按types数组）：
+     * - ctype=3  → 央视频道（固定Tab）
+     * - ctype=6  → 购物频道（固定Tab）
+     * - ctype=9  → 卫视频道（固定Tab）
+     * - ctype=210 → 超清频道
+     * - ctype=27  → 地方频道（虚拟父组，实际频道在子ctype中）
+     * - ctype=30~258 → 地方子分组（省份，ptype=27）
+     */
+    fun classifyByCtype(province: String): String {
+        return when (ctype) {
+            3 -> GROUP_CCTV
+            6 -> GROUP_SHOPPING
+            9 -> GROUP_SATELLITE
+            210 -> GROUP_UHD
+            27 -> GROUP_LOCAL
+            in 30..258 -> {
+                // 地方子分组 → 使用省份名（去掉"地区"后缀）
+                // 例："广东地区" → "广东"
+                val p = province.replace("地区", "").trim()
+                if (p.isNotBlank()) p else GROUP_LOCAL
+            }
+            else -> autoGroup()  // 非APK源走智能分类
+        }
+    }
+
+    /** 智能分类：根据频道名判断所属分组（用于M3U等非APK源） */
     fun autoGroup(): String {
         val n = name.lowercase()
         return when {

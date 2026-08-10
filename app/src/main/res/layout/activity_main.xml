@@ -68,16 +68,16 @@
             android:contentDescription="@string/action_favorite" />
     </LinearLayout>
 
-    <!-- 频道列表覆盖层 (左侧) -->
+    <!-- 频道列表覆盖层 (左侧, 带分组Tab) -->
     <LinearLayout
         android:id="@+id/channelListOverlay"
-        android:layout_width="340dp"
+        android:layout_width="380dp"
         android:layout_height="match_parent"
         android:layout_gravity="start"
         android:orientation="vertical"
         android:background="@drawable/bg_channel_list_overlay"
-        android:paddingTop="16dp"
-        android:paddingBottom="16dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
         android:visibility="gone">
 
         <TextView
@@ -87,15 +87,34 @@
             android:textColor="@color/text_primary"
             android:textSize="16sp"
             android:textStyle="bold"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:paddingBottom="8dp" />
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="4dp" />
+
+        <!-- 分组Tab栏（水平滚动） -->
+        <HorizontalScrollView
+            android:id="@+id/groupTabScroller"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none"
+            android:fillViewport="false"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp">
+
+            <LinearLayout
+                android:id="@+id/groupTabContainer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical" />
+        </HorizontalScrollView>
 
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:background="#33FFFFFF"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="2dp" />
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/rvChannelList"

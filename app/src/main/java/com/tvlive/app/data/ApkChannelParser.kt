@@ -202,6 +202,10 @@ object ApkChannelParser {
 
                 if (title.isBlank()) continue
 
+                // ★★★ 过滤占位符/导视频道（不是真正可播放的频道）★★★
+                // APK数据中混有"导视精选"、"热门推荐"、"居家好物"等占位符
+                if (isFillerChannel(title)) continue
+
                 // 4. 解密+ISP过滤所有URL（按APK的Channel.setUrls逻辑）
                 val decryptedUrls = mutableListOf<Pair<String, Int>>()  // (url, priority)
                 for (j in 0 until urlsArray.length()) {
@@ -218,8 +222,8 @@ object ApkChannelParser {
                 // 5. 按CDN优先级排序（移动网络优化）
                 decryptedUrls.sortByDescending { it.second }
 
-                // 6. 分类分组
-                val group = classifyGroup(province, title)
+                // 6. ★★★ 按APK ctype分类（完全按APK的type数组逻辑）★★★
+                val group = classifyGroup(ctype, province)
 
                 // 7. 创建Channel
                 // 主URL = 优先级最高的URL
@@ -265,17 +269,45 @@ object ApkChannelParser {
         return data.size >= 2 && data[0] == 0x1f.toByte() && data[1] == 0x8b.toByte()
     }
 
-    private fun classifyGroup(province: String, name: String): String {
-        val n = name.lowercase()
-        val p = province.lowercase()
-        return when {
-            n.contains("cctv") || n.contains("央视") || n.contains("中央") || p.contains("央视") -> Channel.GROUP_CCTV
-            n.contains("卫视") || p.contains("卫视") -> Channel.GROUP_SATELLITE
-            n.contains("香港") || n.contains("tvb") || n.contains("澳门") || n.contains("台湾") -> Channel.GROUP_HK_MACAO_TW
-            n.contains("nhk") || n.contains("bbc") || n.contains("cnn") || n.contains("cgtn") -> Channel.GROUP_INTERNATIONAL
-            p.contains("超清") -> Channel.GROUP_OTHER
-            "地区" in province -> province.replace("地区", "")
-            else -> Channel.GROUP_LOCAL
+    /**
+     * ★★★ 按APK ctype分类（完全按APK的types数组逻辑）★★★
+     *
+     * APK分类体系：
+     * - ctype=3  → 央视频道（固定Tab，isfixed=true）
+     * - ctype=6  → 购物频道（固定Tab，isfixed=true）
+     * - ctype=9  → 卫视频道（固定Tab，isfixed=true）
+     * - ctype=210 → 超清频道（isfixed=false, ptype=-1）
+     * - ctype=27  → 地方频道（虚拟父组，实际频道在子ctype中）
+     * - ctype=30~258 → 地方子分组（省份，ptype=27，一个ctype对应一个省份）
+     *
+     * @param ctype 频道类型（APK JSON中的ctype字段）
+     * @param province 省份名（如"广东地区"、"湖南地区"）
+     */
+    private fun classifyGroup(ctype: Int, province: String): String {
+        return when (ctype) {
+            3 -> Channel.GROUP_CCTV
+            6 -> Channel.GROUP_SHOPPING
+            9 -> Channel.GROUP_SATELLITE
+            210 -> Channel.GROUP_UHD
+            27 -> Channel.GROUP_LOCAL
+            in 30..258 -> {
+                // 地方子分组 → 使用省份名（去掉"地区"后缀）
+                // APK中每个ctype=30~258对应一个省份
+                val p = province.replace("地区", "").trim()
+                if (p.isNotBlank()) p else Channel.GROUP_LOCAL
+            }
+            else -> Channel.GROUP_OTHER
         }
+    }
+
+    /**
+     * 判断是否为占位符/导视频道（APK中的虚假频道）
+     *
+     * APK数据中混有占位符频道（如"导视精选"、"热门推荐"、"居家好物"等），
+     * 这些不是真正的可播放频道，而是APK界面的推荐位/导视位。
+     * 过滤掉这些可以大幅减少无用频道数量。
+     */
+    private fun isFillerChannel(name: String): Boolean {
+        return Channel.isFillerChannel(name)
     }
 }

@@ -90,10 +90,12 @@ class ChannelGridAdapter(
         val color = when (group) {
             Channel.GROUP_CCTV -> R.color.tag_cctv
             Channel.GROUP_SATELLITE -> R.color.tag_satellite
+            Channel.GROUP_SHOPPING -> R.color.tag_other       // 购物频道
+            Channel.GROUP_UHD -> R.color.tag_international     // 超清频道
             Channel.GROUP_LOCAL -> R.color.tag_local
             Channel.GROUP_HK_MACAO_TW -> R.color.tag_hk
             Channel.GROUP_INTERNATIONAL -> R.color.tag_international
-            else -> R.color.tag_other
+            else -> R.color.tag_other   // 省份分组
         }
         b.tvGroup.setBackgroundColor(ContextCompat.getColor(context, color))
     }

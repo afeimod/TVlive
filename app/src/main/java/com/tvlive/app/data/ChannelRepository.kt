@@ -395,14 +395,25 @@ class ChannelRepository(private val context: Context) {
         }
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * ★★★ 分组排序（完全按APK的type数组顺序）★★★
+     *
+     * APK Tab顺序：央视频道 → 卫视频道 → 购物频道 → 超清频道 → 地方频道 → 各省份
+     * 非APK源分组（港澳台、国际）排在最后
+     */
     private fun groupOrder(name: String): Int = when (name) {
         Channel.GROUP_CCTV -> 0
         Channel.GROUP_SATELLITE -> 1
-        Channel.GROUP_HK_MACAO_TW -> 2
-        Channel.GROUP_LOCAL -> 3
-        Channel.GROUP_INTERNATIONAL -> 4
-        Channel.GROUP_OTHER -> 5
-        else -> 6
+        Channel.GROUP_SHOPPING -> 2
+        Channel.GROUP_UHD -> 3
+        Channel.GROUP_LOCAL -> 4
+        Channel.GROUP_HK_MACAO_TW -> 90
+        Channel.GROUP_INTERNATIONAL -> 91
+        Channel.GROUP_OTHER -> 95
+        else -> {
+            // 省份分组排5~89（按拼音首字母排序）
+            5 + (name.firstOrNull()?.code?.rem(80) ?: 0)
+        }
     }
 
     // ==================== 历史记录 ====================
