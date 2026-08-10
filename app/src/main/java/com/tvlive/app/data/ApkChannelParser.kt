@@ -96,7 +96,7 @@ object ApkChannelParser {
             // http(s):// → 直接播放
             // 其他协议（migutv, ccto, gwpd等）→ 无法播放，过滤掉
 
-            url = when {
+            val resolvedUrl: String? = when {
                 // 可直接转换的协议 → 保留前缀
                 url.startsWith("sys_http://") -> url
                 url.startsWith("sys_https://") -> url
@@ -128,7 +128,7 @@ object ApkChannelParser {
                 else -> null
             }
 
-            url
+            resolvedUrl
         } catch (e: Exception) {
             Log.w(TAG, "Decrypt failed: ${e.message}")
             null
@@ -253,7 +253,7 @@ object ApkChannelParser {
     private fun detectIpv6Support(): Boolean {
         return try {
             java.net.NetworkInterface.getNetworkInterfaces()?.toList()?.any { iface ->
-                iface.interfaceAddresses?.any { addr?.address is java.net.Inet6Address } == true
+                iface.interfaceAddresses?.any { it.address is java.net.Inet6Address } == true
             } == true
         } catch (e: Exception) {
             false

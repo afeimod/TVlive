@@ -28,6 +28,7 @@ import com.tvlive.app.TvLiveApp
 import com.tvlive.app.data.model.Channel
 import com.tvlive.app.databinding.ActivityMainBinding
 import com.tvlive.app.databinding.ItemChannelOverlayBinding
+import com.tvlive.app.net.ISPDetector
 import com.tvlive.app.player.TvPlayerManager
 import com.tvlive.app.ui.RefreshState
 import com.tvlive.app.ui.MainViewModel
@@ -115,6 +116,12 @@ class MainActivity : AppCompatActivity() {
             this.onError = this@MainActivity.onError
             this.onLoading = this@MainActivity.onLoading
             this.onReady = this@MainActivity.onReady
+            this.onUrlSwitched = { url ->
+                runOnUiThread {
+                    // URL切换时更新频道信息，显示CDN类型
+                    updateUrlLineInfo()
+                }
+            }
         }
 
         setupChannelList()
@@ -123,13 +130,19 @@ class MainActivity : AppCompatActivity() {
         setupGestureDetector()
         observeData()
 
-        // 首次启动自动刷新源
-        val prefs = getSharedPreferences("tvlive_prefs", MODE_PRIVATE)
-        if (!prefs.getBoolean("sources_loaded", false)) {
-            viewModel.refreshSources()
-        } else {
-            // 已有缓存数据，直接加载播放
-            loadCachedChannelsAndPlay()
+        // ★★★ 先检测ISP，再加载源（对应APK: App.onCreate → 检测ISP类型存入App.f）★★★
+        // APK在Application.onCreate中检测ISP，频道数据按ISP过滤
+        lifecycleScope.launch {
+            ISPDetector.detect(this@MainActivity)
+            Log.i("MainActivity", "ISP detected: ${ISPDetector.currentISP.label} (${ISPDetector.currentNetworkType})")
+
+            // ISP检测完成后再加载源
+            val prefs = getSharedPreferences("tvlive_prefs", MODE_PRIVATE)
+            if (!prefs.getBoolean("sources_loaded", false)) {
+                viewModel.refreshSources()
+            } else {
+                loadCachedChannelsAndPlay()
+            }
         }
 
         showHint()
@@ -283,8 +296,17 @@ class MainActivity : AppCompatActivity() {
             hideSettingsPanel()
             showSearchDialog()
         }
+        // ★★★ URL线路切换按钮（对应APK的遥控器 S1/S2 键 → srcIndex → urlIndex++）★★★
+        // 用户可以手动切换当前频道的不同CDN线路
         binding.btnSourceManager.setOnClickListener {
-            startActivity(Intent(this, SourceManagerActivity::class.java))
+            // 复用源管理按钮：如果在播放中，切换URL线路；否则打开源管理
+            val switchedUrl = playerManager.switchUrlLine()
+            if (switchedUrl != null) {
+                updateUrlLineInfo()
+                Toast.makeText(this, "已切换线路", Toast.LENGTH_SHORT).show()
+            } else {
+                startActivity(Intent(this, SourceManagerActivity::class.java))
+            }
         }
         binding.btnSettings.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
@@ -403,9 +425,18 @@ class MainActivity : AppCompatActivity() {
         binding.tvLoadingText.text = getString(R.string.player_loading)
         binding.errorView.visibility = View.GONE
 
-        // 传入主 URL + 备用 URL 列表，播放器自动降级（关键：应对中国移动网络屏蔽）
+        // ★★★ 传入主 URL + 备用 URL 列表，播放器按APK逻辑自动降级 ★★★
+        // 播放流程（与APK完全一致）：
+        // 1. 清DNS缓存（dns_cache_clear=1）
+        // 2. 按ISP过滤URL（$Y/$D/$L标签）
+        // 3. 按CDN优先级排序（咪咕 > sys_ > 腾讯 > 抖音）
+        // 4. 协议解析（sys_ → 系统播放器，ikkHeaders → 注入Headers）
+        // 5. 播放失败 → urlIndex+1（对应APK的reconnect=3）
         playerManager.play(channel.url, channel.getBackupUrlList())
         binding.playerView.player = playerManager.player
+
+        // 显示URL线路信息
+        updateUrlLineInfo()
 
         lifecycleScope.launch {
             TvLiveApp.instance.repository.addHistory(channel)
@@ -433,11 +464,25 @@ class MainActivity : AppCompatActivity() {
             "${currentIndex + 1}"
         }
         binding.tvChannelName.text = channel.name
-        binding.tvChannelGroup.text = channel.group
+        // ★ 显示分组 + ISP信息（对应APK: 分类列表显示当前ISP类型）
+        val ispInfo = ISPDetector.currentISP.label
+        binding.tvChannelGroup.text = if (ispInfo != "未知") "${channel.group} · $ispInfo" else channel.group
         binding.ivFavorite.setImageResource(
             if (channel.favorite) R.drawable.ic_star_on else R.drawable.ic_star_off
         )
         showChannelInfo()
+    }
+
+    /** 更新URL线路信息（对应APK: 频道信息栏显示当前线路/CDN类型） */
+    private fun updateUrlLineInfo() {
+        val urlInfo = playerManager.getCurrentUrlInfo()
+        if (urlInfo.isNotBlank()) {
+            // 在频道名称后显示线路信息
+            val channel = channels.getOrNull(currentIndex)
+            if (channel != null) {
+                binding.tvChannelName.text = "${channel.name} $urlInfo"
+            }
+        }
     }
 
     private fun showChannelInfo() {
@@ -648,6 +693,17 @@ class MainActivity : AppCompatActivity() {
                 }
                 KeyEvent.KEYCODE_VOLUME_MUTE -> {
                     playerManager.toggleMute()
+                    return true
+                }
+                // ★★★ R键: 手动切换URL线路（对应APK的遥控器S1/S2键 → srcIndex → urlIndex++）★★★
+                KeyEvent.KEYCODE_R -> {
+                    val switchedUrl = playerManager.switchUrlLine()
+                    if (switchedUrl != null) {
+                        updateUrlLineInfo()
+                        Toast.makeText(this, "已切换线路", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, "当前频道仅有一个线路", Toast.LENGTH_SHORT).show()
+                    }
                     return true
                 }
             }

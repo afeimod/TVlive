@@ -154,6 +154,30 @@ object HttpClientProvider {
         .build()
 
     /**
+     * ★★★ 清空播放器连接池（对应APK的 dns_cache_clear=1）★★★
+     *
+     * IJK Player 的 dns_cache_clear=1 会在每次播放前清空 FFmpeg 的 DNS 缓存。
+     * ExoPlayer 没有此选项，但我们可以通过以下两步实现等效效果：
+     *
+     * 1. 清空 SafeDns 内部缓存（防止被污染的DNS结果被复用）
+     * 2. 驱遣 OkHttp 连接池中的所有空闲连接（关闭缓存的TCP连接）
+     *
+     * 这是防止中国移动 DNS 污染被复用的关键机制。
+     */
+    fun evictPlayerConnections() {
+        safeDns.clearCache()
+        playerConnectionPool.evictAll()
+    }
+
+    /**
+     * 清空数据请求连接池
+     */
+    fun evictDataConnections() {
+        safeDns.clearCache()
+        dataConnectionPool.evictAll()
+    }
+
+    /**
      * 用于播放器的 OkHttpClient（播放流媒体）
      *
      * 5G 中国移动直播流播放优化参数：

@@ -125,6 +125,18 @@ class SafeDns : Dns {
 
     private val cache = ConcurrentHashMap<String, Pair<List<InetAddress>, Long>>()
 
+    /**
+     * ★★★ 清空DNS缓存（对应APK的 dns_cache_clear=1）★★★
+     *
+     * IJK Player在每次播放前都会清空DNS缓存（dns_cache_clear=1），
+     * 防止被污染的DNS结果被复用。此方法清除SafeDns的内部缓存，
+     * 确保下一次DNS查询走全新的解析路径。
+     */
+    fun clearCache() {
+        cache.clear()
+        Log.d(TAG, "SafeDns cache cleared")
+    }
+
     override fun lookup(hostname: String): List<InetAddress> {
         // 1. 检查缓存
         cache[hostname]?.let { (addresses, expireAt) ->

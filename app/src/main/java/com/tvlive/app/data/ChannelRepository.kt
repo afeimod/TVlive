@@ -140,16 +140,27 @@ class ChannelRepository(private val context: Context) {
     /**
      * 从网络加载所有启用的源并解析频道
      *
-     * 中国移动 5G 网络深度优化策略（v2）：
+     * ★★★ 中国移动反屏蔽策略（v3 - 按APK运行时逻辑）★★★
      *
      * 1. 并行加载所有启用的源（每个源 8s 超时）
-     * 2. **关键变更**：无论网络源是否成功，都把内置备用频道追加到列表末尾
-     *    这样即使 iptv-org 加载成功但其流地址被屏蔽，用户也能切换到内置频道播放
-     * 3. 内置备用频道使用真实可用的中国移动 IPTV IPv6 URL（来自 yuanzl77/IPTV）
-     *    在移动 5G/4G/宽带网络内可直接访问
-     * 4. 同名频道会被合并（保留多 URL），播放器自动降级尝试
+     * 2. ★ APK加密源加载前先检测ISP（对应APK: App.onCreate → 检测ISP存入App.f）
+     *    ISP检测结果用于URL的$Y/$D/$L标签过滤（仅保留匹配当前运营商的URL）
+     * 3. 无论网络源是否成功，都把内置备用频道追加到列表末尾
+     * 4. 内置备用频道使用真实可用的中国移动 IPTV IPv6 URL
+     * 5. 同名频道会被合并（保留多 URL），播放器自动降级尝试
      */
     suspend fun refreshAllSources(onProgress: ((current: Int, total: Int, sourceName: String) -> Unit)? = null): RefreshResult {
+        // ★★★ 加载源前先确保ISP已检测（对应APK: App.f在频道加载前已设置）★★★
+        // 如果ISP未检测，触发一次检测
+        if (ISPDetector.currentISP == ISPDetector.ISPType.UNKNOWN) {
+            try {
+                ISPDetector.detect(context)
+                Log.i("ChannelRepository", "ISP pre-detected: ${ISPDetector.currentISP.label}")
+            } catch (e: Exception) {
+                Log.w("ChannelRepository", "ISP pre-detection failed: ${e.message}")
+            }
+        }
+
         val sources = getEnabledSources()
         val totalChannels = java.util.concurrent.atomic.AtomicInteger(0)
         val successCount = java.util.concurrent.atomic.AtomicInteger(0)

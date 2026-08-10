@@ -200,8 +200,8 @@ object ISPDetector {
             }
         }
 
-        // 服务 2：ip-api.com（海外服务，作为备用）
-        val job2 = scope.async<Unit> {
+        // 服务 3：ip-api.com（海外服务，作为备用）
+        val job3 = scope.async<Unit> {
             try {
                 val request = Request.Builder()
                     .url("http://ip-api.com/json/?lang=zh-CN")
@@ -231,6 +231,7 @@ object ISPDetector {
                 try {
                     job1.await()
                     job2.await()
+                    job3.await()
                 } catch (_: Exception) {}
             }
         } catch (_: kotlinx.coroutines.TimeoutCancellationException) {}
